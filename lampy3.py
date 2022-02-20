@@ -1,3 +1,4 @@
+import re
 from typing import *
 from dataclasses import dataclass
 from lark import Lark, Transformer as LarkTransformer, Token
@@ -6,11 +7,16 @@ import os
 
 grammar = r"""
     start : expr_0
-    ?expr_0 : let | fun | from_import | expr_1
-    fun : "fun"i CNAME (CNAME+) "=" expr_0
-    from_import : "from"i (CNAME | qname) "import"i CNAME+ "end"i
-    let : "let"i CNAME "=" expr_0 "in" expr_0
-    ?expr_1 : var | const
+    ?expr_0 : fun | from_import | expr_1
+    ?expr_1 : let | ifelse | var | const
+
+
+    fun             : "fun"i CNAME (CNAME+) "=" expr_0
+    from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i
+
+    let             : "let"i CNAME "=" expr_0 "in" expr_0
+    ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
+
     ?const : bool
     qname : CNAME ("." CNAME)*
     var : CNAME
@@ -74,6 +80,13 @@ class TFun(AST):
     body: AST
 
 
+@dataclass
+class TIfElse(AST):
+    cond: AST
+    then: AST
+    else_: AST
+
+
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
@@ -104,6 +117,9 @@ class Transmformator(LarkTransformer):
         name, *args, body = tree
         return TFun(name, args, body)
 
+    def ifelse(self, tree):
+        return TIfElse(*tree)
+
 
 def test_parse():
     assert parse("true") == TBool(True)
@@ -116,6 +132,10 @@ def test_parse():
     assert parse("fun id x = x") == TFun("id", ["x"], TVar("x"))
     assert parse("fun const a b = a") == TFun("const", ["a", "b"], TVar("a"))
 
+    assert parse("if true then false else true") == TIfElse(
+        TBool(True), TBool(False), TBool(True)
+    )
+
 
 # Compiling stuff
 def indent(i):
@@ -127,14 +147,13 @@ def compile(ast, i=0):
         return "True" if ast.value else "False"
     elif type(ast) is TLet:
         s = S()
-        s.write(indent(i))
-        s.write(f"{ast.var} = {compile(ast.e1, i)}")
-        s.write(f"\n{indent(i)}{compile(ast.e2, i)}")
+        s.write(f"{indent(i)}{ast.var} = {compile(ast.e1, 0)}\n")
+        s.write(f"{indent(i)}{compile(ast.e2, 0)}\n")
         return s.getvalue()
     elif type(ast) is TVar:
-        return ast.name
+        return f"{indent(i)}{ast.name}"
     elif type(ast) is TFromImport:
-        return f"from {ast.module} import {','.join(ast.symbols)}"
+        return f"from {ast.module} import {','.join(ast.symbols)}\n"
     elif type(ast) is TFun:
         s = S()
         s.write(indent(i))
@@ -142,10 +161,15 @@ def compile(ast, i=0):
         s.write("(")
         s.write(", ".join(ast.args))
         s.write("):\n")
-        i += 1
         s.write(indent(i))
-        s.write(f"return {compile(ast.body, i)}")
+        body = compile(ast.body, i + 1)
+        body = [b for b in body.split("\n") if b]
+        body[-1] = re.sub(r"(\s+)(.*)", r"\1return \2\n", body[-1])
+        body = "\n".join(body)
+        s.write(body)
         return s.getvalue()
+    elif type(ast) is TIfElse:
+        return f"{indent(i)}{compile(ast.then)} if {compile(ast.cond)} else {compile(ast.else_)}"
 
 
 def pcompile(inp):
@@ -158,14 +182,39 @@ def test_compile():
         pcompile("let x = true in x")
         == """\
 x = True
-x"""
+x
+"""
     )
 
-    assert pcompile("from foo import bar tar zar end") == "from foo import bar,tar,zar"
+    assert (
+        pcompile("from foo import bar tar zar end") == "from foo import bar,tar,zar\n"
+    )
 
     assert (
         pcompile("fun id x = x")
         == """\
 def id(x):
-    return x"""
+    return x
+"""
+    )
+
+    assert (
+        pcompile("fun foo x = let y = true in y")
+        == """\
+def foo(x):
+    y = True
+    return y
+"""
+    )
+
+    assert pcompile("if true then false else true") == "False if True else True"
+
+    assert (
+        pcompile("let x = true in let y = false in z")
+        == """\
+x = True
+y = False
+z
+
+"""
     )
