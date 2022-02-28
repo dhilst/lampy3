@@ -1,3 +1,4 @@
+import sys
 import re
 from typing import *
 from dataclasses import dataclass
@@ -8,8 +9,11 @@ import os
 grammar = r"""
     start : expr_0
     ?expr_0 : fun | from_import | expr_1
-    ?expr_1 : let | ifelse | var | const
+    ?expr_1 : let | ifelse | expr_2
+    ?expr_2 : appl
+    ?expr_3 : var | const
 
+    ?appl : appl expr_3 | expr_3
 
     fun             : "fun"i CNAME (CNAME+) "=" expr_0
     from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i
@@ -34,7 +38,7 @@ grammar = r"""
     %ignore SH_COMMENT
 """
 
-let_parser = Lark(grammar, parser="lalr")
+let_parser = Lark(grammar, parser="lalr", debug=True)
 
 
 def parse(input_):
@@ -48,6 +52,12 @@ class AST:
 @dataclass
 class TList(AST):
     values: List[AST]
+
+
+@dataclass
+class TApply(AST):
+    e1: AST
+    e2: AST
 
 
 @dataclass
@@ -120,6 +130,9 @@ class Transmformator(LarkTransformer):
     def ifelse(self, tree):
         return TIfElse(*tree)
 
+    def appl(self, tree):
+        return TApply(*tree)
+
 
 def test_parse():
     assert parse("true") == TBool(True)
@@ -135,6 +148,9 @@ def test_parse():
     assert parse("if true then false else true") == TIfElse(
         TBool(True), TBool(False), TBool(True)
     )
+
+    assert parse("foo foo") == TApply(TVar("foo"), TVar("foo"))
+    assert parse("foo foo foo") == TApply(TApply(TVar("foo"), TVar("foo")), TVar("foo"))
 
 
 # Compiling stuff
