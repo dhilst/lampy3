@@ -1,19 +1,17 @@
-import sys
 import re
 from typing import *
 from dataclasses import dataclass
-from lark import Lark, Transformer as LarkTransformer, Token
+from lark import Lark, Transformer as LarkTransformer
 from io import StringIO as S
-import os
 
 grammar = r"""
     start : expr_0
     ?expr_0 : fun | from_import | expr_1
     ?expr_1 : let | ifelse | expr_2
     ?expr_2 : appl
+    ?appl : appl expr_3+ | expr_3
     ?expr_3 : var | const
 
-    ?appl : appl expr_3 | expr_3
 
     fun             : "fun"i CNAME (CNAME+) "=" expr_0
     from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i
@@ -24,7 +22,7 @@ grammar = r"""
     ?const : bool
     qname : CNAME ("." CNAME)*
     var : CNAME
-    bool : BOOL 
+    bool : BOOL
 
     BOOL.10 : "true"i | "false"i
 
@@ -56,8 +54,8 @@ class TList(AST):
 
 @dataclass
 class TApply(AST):
-    e1: AST
-    e2: AST
+    fname: AST
+    args: List[AST]
 
 
 @dataclass
@@ -131,7 +129,8 @@ class Transmformator(LarkTransformer):
         return TIfElse(*tree)
 
     def appl(self, tree):
-        return TApply(*tree)
+        fname, *args = tree
+        return TApply(fname, args)
 
 
 def test_parse():
@@ -149,8 +148,8 @@ def test_parse():
         TBool(True), TBool(False), TBool(True)
     )
 
-    assert parse("foo foo") == TApply(TVar("foo"), TVar("foo"))
-    assert parse("foo foo foo") == TApply(TApply(TVar("foo"), TVar("foo")), TVar("foo"))
+    assert parse("foo foo") == TApply(TVar("foo"), [TVar("foo")])
+    assert parse("foo foo foo") == TApply(TVar("foo"), [TVar("foo"), TVar("foo")])
 
 
 # Compiling stuff
@@ -158,16 +157,24 @@ def indent(i):
     return " " * i * 4
 
 
-def compile(ast, i=0):
+def compile_py_expr(ast) -> str:
     if type(ast) is TBool:
         return "True" if ast.value else "False"
-    elif type(ast) is TLet:
+    elif type(ast) is TVar:
+        return f"{ast.name}"
+    elif type(ast) is TApply:
+        fname = compile(ast.fname)
+        args = ", ".join(compile(x) for x in ast.args)
+        return f"{fname}({args})"
+    raise RuntimeError(f"Compile error, {ast} not known")
+
+
+def compile(ast, i=0) -> str:
+    if type(ast) is TLet:
         s = S()
         s.write(f"{indent(i)}{ast.var} = {compile(ast.e1, 0)}\n")
         s.write(f"{indent(i)}{compile(ast.e2, 0)}\n")
         return s.getvalue()
-    elif type(ast) is TVar:
-        return f"{indent(i)}{ast.name}"
     elif type(ast) is TFromImport:
         return f"from {ast.module} import {','.join(ast.symbols)}\n"
     elif type(ast) is TFun:
@@ -186,10 +193,22 @@ def compile(ast, i=0):
         return s.getvalue()
     elif type(ast) is TIfElse:
         return f"{indent(i)}{compile(ast.then)} if {compile(ast.cond)} else {compile(ast.else_)}"
+    else:
+        return indent(i) + compile_py_expr(ast)
 
 
 def pcompile(inp):
     return compile(parse(inp))
+
+
+def compile_opened_file(openf: TextIO) -> str:
+    return pcompile(openf.read())
+
+
+def compile_file(input: str, output: str):
+    with open(input, "r") as i, open(output, "w") as o:
+        out = compile_opened_file(i)
+        o.write(out)
 
 
 def test_compile():
@@ -234,3 +253,19 @@ z
 
 """
     )
+
+    assert pcompile("f a b c") == "f(a, b, c)"
+
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    argparser = ArgumentParser("Lambpy :)")
+    argparser.add_argument("command", metavar="CMD", type=str, help="One of [compile]")
+    argparser.add_argument("--input")
+    argparser.add_argument("--output")
+
+    args = argparser.parse_args()
+
+    if args.command == "compile":
+        compile_file(args.input, args.output)
