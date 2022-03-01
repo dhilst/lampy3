@@ -5,19 +5,22 @@ from lark import Lark, Transformer as LarkTransformer
 from io import StringIO as S
 
 grammar = r"""
-    start : expr_0
+    start : script
+    ?script : expr_0+
+
     ?expr_0 : fun | from_import | expr_1
     ?expr_1 : let | ifelse | expr_2
     ?expr_2 : appl
-    ?appl : appl expr_3+ | expr_3
-    ?expr_3 : var | const
+    ?expr_3 : var | const | atom
 
 
-    fun             : "fun"i CNAME (CNAME+) "=" expr_0
+    fun             : "fun"i CNAME (CNAME+) "=" expr_0 "end"i
     from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i
 
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
+    ?appl : appl expr_3+ | expr_3
+    ?atom : "(" expr_1 ")"
 
     ?const : bool
     qname : CNAME ("." CNAME)*
@@ -95,6 +98,11 @@ class TIfElse(AST):
     else_: AST
 
 
+@dataclass
+class TScript(AST):
+    exprs: List[AST]
+
+
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
@@ -132,6 +140,9 @@ class Transmformator(LarkTransformer):
         fname, *args = tree
         return TApply(fname, args)
 
+    def script(self, tree):
+        return TScript(tree)
+
 
 def test_parse():
     assert parse("true") == TBool(True)
@@ -141,8 +152,8 @@ def test_parse():
         "foo", "bar tar zar".split()
     )
 
-    assert parse("fun id x = x") == TFun("id", ["x"], TVar("x"))
-    assert parse("fun const a b = a") == TFun("const", ["a", "b"], TVar("a"))
+    assert parse("fun id x = x end") == TFun("id", ["x"], TVar("x"))
+    assert parse("fun const a b = a end") == TFun("const", ["a", "b"], TVar("a"))
 
     assert parse("if true then false else true") == TIfElse(
         TBool(True), TBool(False), TBool(True)
@@ -193,6 +204,10 @@ def compile(ast, i=0) -> str:
         return s.getvalue()
     elif type(ast) is TIfElse:
         return f"{indent(i)}{compile(ast.then)} if {compile(ast.cond)} else {compile(ast.else_)}"
+    elif type(ast) is TScript:
+        exprs = [compile(e) for e in ast.exprs]
+        exprs_str = "\n".join(exprs)
+        return exprs_str
     else:
         return indent(i) + compile_py_expr(ast)
 
@@ -226,7 +241,7 @@ x
     )
 
     assert (
-        pcompile("fun id x = x")
+        pcompile("fun id x = x end")
         == """\
 def id(x):
     return x
@@ -234,7 +249,7 @@ def id(x):
     )
 
     assert (
-        pcompile("fun foo x = let y = true in y")
+        pcompile("fun foo x = let y = true in y end")
         == """\
 def foo(x):
     y = True

@@ -1,7 +1,8 @@
-fun not x =
+fun not_ x =
     if x
     then false
     else true
+end
 
 
-print (not false)
+print (not_ false)
