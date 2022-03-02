@@ -213,13 +213,16 @@ def indent(i):
 
 
 def compile_py_expr(ast) -> str:
+    def compile(*_) -> NoReturn:  # type: ignore
+        raise Exception("compile_py_expr must not call compile")
+
     if type(ast) is TBool:
         return "True" if ast.value else "False"
     elif type(ast) is TVar:
         return f"{ast.name}"
     elif type(ast) is TApply:
-        fname = compile(ast.fname)
-        args = ", ".join(compile(x) for x in ast.args)
+        fname = compile_py_expr(ast.fname)
+        args = ", ".join(compile_py_expr(x) for x in ast.args)
         return f"{fname}({args})"
     elif type(ast) is TString:
         return ast.value
@@ -228,7 +231,14 @@ def compile_py_expr(ast) -> str:
     elif type(ast) is TInteger:
         return str(ast.value)
     elif type(ast) is TBin:
-        return " ".join(compile(n) for n in ast.values)
+        return " ".join(compile_py_expr(n) for n in ast.values)
+    elif type(ast) is TLet:
+        e1 = compile_py_expr(ast.e1)
+        e2 = compile_py_expr(ast.e2)
+        return f"(lambda {ast.var} : {e2})({e1})"
+    elif type(ast) is TIfElse:
+        return f"{compile_py_expr(ast.then)} if {compile_py_expr(ast.cond)} else {compile_py_expr(ast.else_)}"
+
     raise RuntimeError(f"Compile error, {ast} not known")
 
 
@@ -254,8 +264,6 @@ def compile(ast, i=0) -> str:
         body = "\n".join(body)
         s.write(body)
         return s.getvalue()
-    elif type(ast) is TIfElse:
-        return f"{indent(i)}{compile(ast.then)} if {compile(ast.cond)} else {compile(ast.else_)}"
     elif type(ast) is TScript:
         exprs = [compile(e) for e in ast.exprs]
         exprs_str = "\n".join(exprs)
