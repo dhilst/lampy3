@@ -1,7 +1,7 @@
 import re
 from typing import *
 from dataclasses import dataclass
-from lark import Lark, Transformer as LarkTransformer
+from lark import Lark, Transformer as LarkTransformer, Token
 from io import StringIO as S
 
 grammar = r"""
@@ -9,7 +9,7 @@ grammar = r"""
     ?script : expr_0+
 
     ?expr_0 : fun | from_import | expr_1
-    ?expr_1 : let | ifelse | expr_2
+    ?expr_1 : let | ifelse | bin_expr | expr_2
     ?expr_2 : appl
     ?expr_3 : var | const | atom
 
@@ -19,14 +19,16 @@ grammar = r"""
 
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
+    bin_expr : expr_1 (OP expr_1)+
     ?appl : appl expr_3+ | expr_3
     ?atom : "(" expr_1 ")"
 
-    ?const : bool
+    ?const : bool | ESCAPED_STRING -> string | INT -> integer
     qname : CNAME ("." CNAME)*
     var : CNAME
     bool : BOOL
 
+    OP : "*" | "+" | "-" | "/" | ">=" | "<=" | "==" | "!=" | ">" | "<"
     BOOL.10 : "true"i | "false"i
 
     %import common.WS
@@ -74,6 +76,16 @@ class TLet(AST):
 
 
 @dataclass
+class TString(AST):
+    value: str
+
+
+@dataclass
+class TInteger(AST):
+    value: int
+
+
+@dataclass
 class TVar(AST):
     name: str
 
@@ -103,6 +115,16 @@ class TScript(AST):
     exprs: List[AST]
 
 
+@dataclass
+class TBin(AST):
+    values: List[AST]
+
+
+@dataclass
+class TOp(AST):
+    op: str
+
+
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
@@ -118,6 +140,12 @@ class Transmformator(LarkTransformer):
             return TBool(False)
 
         raise ValueError
+
+    def string(self, tree):
+        return TString(tree[0].value[1:-1])  # remove quotes
+
+    def integer(self, tree):
+        return TInteger(int(tree[0].value))
 
     def var(self, tree):
         return TVar(tree[0].value)
@@ -143,6 +171,18 @@ class Transmformator(LarkTransformer):
     def script(self, tree):
         return TScript(tree)
 
+    def bin_expr(self, tree):
+        values: List[AST] = []
+        for t in tree:
+            if type(t) is Token and t.type == "OP":
+                values.append(TOp(t.value))
+            elif isinstance(t, AST):
+                values.append(t)
+            else:
+                raise TypeError(f"Unexpected type at {t}")
+
+        return TBin(values)
+
 
 def test_parse():
     assert parse("true") == TBool(True)
@@ -162,6 +202,10 @@ def test_parse():
     assert parse("foo foo") == TApply(TVar("foo"), [TVar("foo")])
     assert parse("foo foo foo") == TApply(TVar("foo"), [TVar("foo"), TVar("foo")])
 
+    assert parse('"foo"') == TString("foo")
+    assert parse("100") == TInteger(100)
+    assert parse("100 * 100") == TBin([TInteger(100), TOp("*"), TInteger(100)])
+
 
 # Compiling stuff
 def indent(i):
@@ -177,6 +221,14 @@ def compile_py_expr(ast) -> str:
         fname = compile(ast.fname)
         args = ", ".join(compile(x) for x in ast.args)
         return f"{fname}({args})"
+    elif type(ast) is TString:
+        return ast.value
+    elif type(ast) is TOp:
+        return ast.op
+    elif type(ast) is TInteger:
+        return str(ast.value)
+    elif type(ast) is TBin:
+        return " ".join(compile(n) for n in ast.values)
     raise RuntimeError(f"Compile error, {ast} not known")
 
 
@@ -270,6 +322,8 @@ z
     )
 
     assert pcompile("f a b c") == "f(a, b, c)"
+
+    assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
 
 
 if __name__ == "__main__":
