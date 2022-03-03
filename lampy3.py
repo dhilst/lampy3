@@ -1,4 +1,8 @@
+import sys
 import re
+from argparse import ArgumentParser
+from tempfile import NamedTemporaryFile
+from subprocess import run
 from typing import *
 from dataclasses import dataclass
 from lark import Lark, Transformer as LarkTransformer, Token
@@ -225,7 +229,7 @@ def compile_py_expr(ast) -> str:
         args = ", ".join(compile_py_expr(x) for x in ast.args)
         return f"{fname}({args})"
     elif type(ast) is TString:
-        return ast.value
+        return repr(ast.value)
     elif type(ast) is TOp:
         return ast.op
     elif type(ast) is TInteger:
@@ -286,6 +290,16 @@ def compile_file(input: str, output: str):
         o.write(out)
 
 
+def prun(inp):
+    with NamedTemporaryFile("w", delete=False) as o:
+        with open(inp, "r") as i:
+            out = compile_opened_file(i)
+        o.write(out)
+        o.flush()
+        cmdline = [sys.executable, o.name]
+        run(cmdline)
+
+
 def test_compile():
     assert pcompile("true") == "True"
     assert (
@@ -334,10 +348,8 @@ z
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
 
 
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-
-    argparser = ArgumentParser("Lambpy :)")
+def main():
+    argparser = ArgumentParser("Lampy 3")
     argparser.add_argument("command", metavar="CMD", type=str, help="One of [compile]")
     argparser.add_argument("--input")
     argparser.add_argument("--output")
@@ -346,3 +358,9 @@ if __name__ == "__main__":
 
     if args.command == "compile":
         compile_file(args.input, args.output)
+    elif args.command == "run":
+        prun(args.input)
+
+
+if __name__ == "__main__":
+    main()
