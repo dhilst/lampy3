@@ -32,7 +32,7 @@
 ;; each category of keyword is given a particular face
 (defvar lampy-font-lock-keywords)
 (setq lampy-font-lock-keywords `(
-                                 ("\\(fun\\|if\\|then\\|else\\|end\\)" . font-lock-keyword-face)
+                                 ("\\(fun\\|if\\|then\\|else\\|end\\|from\\|import\\)" . font-lock-keyword-face)
                                  ("\\(#.*\\)" . font-lock-comment-face)
                                  ("[0-9]+" . font-lock-constant-face)
                                  ("\\(true\\|false\\)" . font-lock-constant-face)
