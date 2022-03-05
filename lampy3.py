@@ -10,20 +10,18 @@ from io import StringIO as S
 
 grammar = r"""
     start : script
-    ?script : expr_0 | (expr_0 ";")+
+    ?script : stmt | (stmt ";")+
 
-    ?expr_0 : fun | import_ | from_import | expr_1
+    ?stmt : def_ | import_ | from_import | expr_1
     ?expr_1 : let | ifelse | bin_expr | expr_2
     ?expr_2 : appl
     ?expr_3 :  var | const | atom
 
-
-    fun             : "fun"i CNAME ((CNAME+) | unit) "=" expr_0 "end"i?
+    def_            : "def"i CNAME ((CNAME+) | unit) "=" expr_1 "end"i?
     from_import     : "from"i qname "import"i qname+
     import_          : "import"i qname
 
-
-    let             : "let"i CNAME "=" expr_0 "in" expr_0
+    let             : "let"i CNAME "=" expr_1 "in" expr_1
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
     bin_expr : expr_1 (OP expr_1)+
     ?appl : appl expr_3+ | expr_3
@@ -114,7 +112,7 @@ class TImport(AST):
 
 
 @dataclass
-class TFun(AST):
+class TDef(AST):
     name: str
     args: Union[List[TUnit], List[str]]
     body: AST
@@ -183,9 +181,9 @@ class Transmformator(LarkTransformer):
     def qname(self, tree):
         return ".".join(tree)
 
-    def fun(self, tree):
+    def def_(self, tree):
         name, *args, body = tree
-        return TFun(name, args, body)
+        return TDef(name, args, body)
 
     def ifelse(self, tree):
         return TIfElse(*tree)
@@ -218,8 +216,8 @@ def test_parse():
         "foo", "bar tar zar".split()
     )
 
-    assert parse("fun id x = x end") == TFun("id", ["x"], TVar("x"))
-    assert parse("fun const a b = a end") == TFun("const", ["a", "b"], TVar("a"))
+    assert parse("def id x = x end") == TDef("id", ["x"], TVar("x"))
+    assert parse("def const a b = a end") == TDef("const", ["a", "b"], TVar("a"))
 
     assert parse("if true then false else true") == TIfElse(
         TBool(True), TBool(False), TBool(True)
@@ -234,7 +232,7 @@ def test_parse():
 
     assert parse("foo ()") == TApply(fname=TVar(name="foo"), args=[TUnit()])
 
-    assert parse("fun foo () = 1") == TFun(
+    assert parse("def foo () = 1") == TDef(
         name=Token("CNAME", "foo"), args=[TUnit()], body=TInteger(value=1)
     )
 
@@ -290,7 +288,7 @@ def compile(ast, i=0) -> str:
         return f"from {ast.module} import {','.join(ast.symbols)}\n"
     elif type(ast) is TImport:
         return f"import {ast.module}"
-    elif type(ast) is TFun:
+    elif type(ast) is TDef:
         s = S()
         s.write(indent(i))
         s.write(f"def {ast.name}")
@@ -366,7 +364,7 @@ x
     assert pcompile("from foo import bar tar zar") == "from foo import bar,tar,zar\n"
 
     assert (
-        pcompile("fun id x = x")
+        pcompile("def id x = x")
         == """\
 def id(x):
     return x
@@ -374,7 +372,7 @@ def id(x):
     )
 
     assert (
-        pcompile("fun foo x = let y = true in y")
+        pcompile("def foo x = let y = true in y")
         == """\
 def foo(x):
     y = True
@@ -398,7 +396,7 @@ z
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
     assert pcompile("foo ()") == "foo()"
     assert (
-        pcompile("fun foo () = 1")
+        pcompile("def foo () = 1")
         == """def foo():
     return 1
 """
