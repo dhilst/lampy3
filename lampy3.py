@@ -63,10 +63,12 @@ class AST:
 class TList(AST):
     values: List[AST]
 
+
 @dataclass
 class TApply(AST):
     fname: AST
     args: List[AST]
+
 
 @dataclass
 class TUnit(AST):
@@ -105,9 +107,11 @@ class TFromImport(AST):
     module: str
     symbols: List[str]
 
+
 @dataclass
 class TImport(AST):
     module: str
+
 
 @dataclass
 class TFun(AST):
@@ -228,11 +232,13 @@ def test_parse():
     assert parse("100") == TInteger(100)
     assert parse("100 * 100") == TBin([TInteger(100), TOp("*"), TInteger(100)])
 
-    assert parse("foo ()") == TApply(fname=TVar(name='foo'), args=[TUnit()])
+    assert parse("foo ()") == TApply(fname=TVar(name="foo"), args=[TUnit()])
 
-    assert parse("fun foo () = 1") == TFun(name=Token('CNAME', 'foo'), args=[TUnit()], body=TInteger(value=1))
+    assert parse("fun foo () = 1") == TFun(
+        name=Token("CNAME", "foo"), args=[TUnit()], body=TInteger(value=1)
+    )
 
-    assert parse("foo.bar ()") == TApply(fname=TVar(name='foo.bar'), args=[TUnit()])
+    assert parse("foo.bar ()") == TApply(fname=TVar(name="foo.bar"), args=[TUnit()])
 
 
 # Compiling stuff
@@ -292,7 +298,7 @@ def compile(ast, i=0) -> str:
             s.write("():\n")
         else:
             s.write("(")
-            s.write(", ".join(ast.args)) # type: ignore
+            s.write(", ".join(ast.args))  # type: ignore
             s.write("):\n")
             s.write(indent(i))
         body = compile(ast.body, i + 1)
@@ -317,6 +323,15 @@ def compile_opened_file(openf: TextIO) -> str:
     return pcompile(openf.read())
 
 
+def prettify(fname):
+    from subprocess import run
+
+    try:
+        run(["black", "-q", fname])
+    except:
+        pass
+
+
 def compile_file(input: str, output: str):
     with open(input, "r") as i:
         out = compile_opened_file(i)
@@ -325,6 +340,7 @@ def compile_file(input: str, output: str):
         else:
             with open(output, "w") as o:
                 o.write(out)
+            prettify(output)
 
 
 def prun(inp):
@@ -347,9 +363,7 @@ x
 """
     )
 
-    assert (
-        pcompile("from foo import bar tar zar") == "from foo import bar,tar,zar\n"
-    )
+    assert pcompile("from foo import bar tar zar") == "from foo import bar,tar,zar\n"
 
     assert (
         pcompile("fun id x = x")
@@ -383,9 +397,12 @@ z
     assert pcompile("f a b c") == "f(a, b, c)"
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
     assert pcompile("foo ()") == "foo()"
-    assert pcompile("fun foo () = 1") == """def foo():
+    assert (
+        pcompile("fun foo () = 1")
+        == """def foo():
     return 1
 """
+    )
     assert pcompile("foo.bar ()") == "foo.bar()"
 
 
