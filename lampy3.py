@@ -22,6 +22,7 @@ grammar = r"""
     from_import     : "from"i qname "import"i qname+
     import_          : "import"i qname
 
+
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
     bin_expr : expr_1 (OP expr_1)+
@@ -61,7 +62,6 @@ class AST:
 @dataclass
 class TList(AST):
     values: List[AST]
-
 
 @dataclass
 class TApply(AST):
@@ -233,7 +233,6 @@ def test_parse():
     assert parse("fun foo () = 1") == TFun(name=Token('CNAME', 'foo'), args=[TUnit()], body=TInteger(value=1))
 
     assert parse("foo.bar ()") == TApply(fname=TVar(name='foo.bar'), args=[TUnit()])
-
 
 
 # Compiling stuff
