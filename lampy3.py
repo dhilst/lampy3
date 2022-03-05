@@ -10,7 +10,7 @@ from io import StringIO as S
 
 grammar = r"""
     start : script
-    ?script : expr_0+
+    ?script : expr_0 | (expr_0 ";")+
 
     ?expr_0 : fun | from_import | expr_1
     ?expr_1 : let | ifelse | bin_expr | expr_2
@@ -18,8 +18,8 @@ grammar = r"""
     ?expr_3 : var | const | atom
 
 
-    fun             : "fun"i CNAME (CNAME+) "=" expr_0 "end"i
-    from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i
+    fun             : "fun"i CNAME (CNAME+) "=" expr_0 "end"i?
+    from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i?
 
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
@@ -285,9 +285,13 @@ def compile_opened_file(openf: TextIO) -> str:
 
 
 def compile_file(input: str, output: str):
-    with open(input, "r") as i, open(output, "w") as o:
+    with open(input, "r") as i:
         out = compile_opened_file(i)
-        o.write(out)
+        if output == "-":
+            print(out)
+        else:
+            with open(output, "w") as o:
+                o.write(out)
 
 
 def prun(inp):
@@ -352,7 +356,7 @@ def main():
     argparser = ArgumentParser("Lampy 3")
     argparser.add_argument("command", metavar="CMD", type=str, help="One of [compile]")
     argparser.add_argument("--input")
-    argparser.add_argument("--output")
+    argparser.add_argument("--output", default="-")
 
     args = argparser.parse_args()
 
