@@ -12,7 +12,7 @@ grammar = r"""
     start : script
     ?script : expr_0 | (expr_0 ";")+
 
-    ?expr_0 : fun | from_import | expr_1
+    ?expr_0 : fun | import_ | from_import | expr_1
     ?expr_1 : let | ifelse | bin_expr | expr_2
     ?expr_2 : appl
     ?expr_3 :  var | const | atom
@@ -20,6 +20,7 @@ grammar = r"""
 
     fun             : "fun"i CNAME ((CNAME+) | unit) "=" expr_0 "end"i?
     from_import     : "from"i qname "import"i qname+
+    import_          : "import"i qname
 
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
@@ -29,7 +30,7 @@ grammar = r"""
 
     ?const : bool | ESCAPED_STRING -> string | INT -> integer | unit
     ?unit : "()"
-    ?qname : CNAME ("." CNAME)*
+    qname : CNAME ("." CNAME)*
     var : qname
     bool : BOOL
 
@@ -104,6 +105,9 @@ class TFromImport(AST):
     module: str
     symbols: List[str]
 
+@dataclass
+class TImport(AST):
+    module: str
 
 @dataclass
 class TFun(AST):
@@ -166,8 +170,11 @@ class Transmformator(LarkTransformer):
         v, e1, e2 = tree
         return TLet(v, e1, e2)
 
+    def import_(self, tree):
+        return TImport(tree[0])
+
     def from_import(self, tree):
-        return TFromImport(tree[0], [t.value for t in tree[1:]])
+        return TFromImport(tree[0], tree[1:])
 
     def qname(self, tree):
         return ".".join(tree)
@@ -276,6 +283,8 @@ def compile(ast, i=0) -> str:
         return s.getvalue()
     elif type(ast) is TFromImport:
         return f"from {ast.module} import {','.join(ast.symbols)}\n"
+    elif type(ast) is TImport:
+        return f"import {ast.module}"
     elif type(ast) is TFun:
         s = S()
         s.write(indent(i))
