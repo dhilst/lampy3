@@ -15,11 +15,11 @@ grammar = r"""
     ?expr_0 : fun | from_import | expr_1
     ?expr_1 : let | ifelse | bin_expr | expr_2
     ?expr_2 : appl
-    ?expr_3 : var | const | atom
+    ?expr_3 :  var | const | atom
 
 
-    fun             : "fun"i CNAME (CNAME+) "=" expr_0 "end"i?
-    from_import     : "from"i (CNAME | qname) "import"i CNAME+ "end"i?
+    fun             : "fun"i CNAME ((CNAME+) | unit) "=" expr_0 "end"i?
+    from_import     : "from"i qname "import"i qname+
 
     let             : "let"i CNAME "=" expr_0 "in" expr_0
     ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
@@ -27,9 +27,10 @@ grammar = r"""
     ?appl : appl expr_3+ | expr_3
     ?atom : "(" expr_1 ")"
 
-    ?const : bool | ESCAPED_STRING -> string | INT -> integer
-    qname : CNAME ("." CNAME)*
-    var : CNAME
+    ?const : bool | ESCAPED_STRING -> string | INT -> integer | unit
+    ?unit : "()"
+    ?qname : CNAME ("." CNAME)*
+    var : qname
     bool : BOOL
 
     OP : "*" | "+" | "-" | "/" | ">=" | "<=" | "==" | "!=" | ">" | "<"
@@ -65,6 +66,10 @@ class TList(AST):
 class TApply(AST):
     fname: AST
     args: List[AST]
+
+@dataclass
+class TUnit(AST):
+    pass
 
 
 @dataclass
@@ -103,7 +108,7 @@ class TFromImport(AST):
 @dataclass
 class TFun(AST):
     name: str
-    args: List[str]
+    args: Union[List[TUnit], List[str]]
     body: AST
 
 
@@ -133,6 +138,9 @@ class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
 
+    def unit(self, _):
+        return TUnit()
+
     def start(self, tree):
         return tree[0]
 
@@ -152,7 +160,7 @@ class Transmformator(LarkTransformer):
         return TInteger(int(tree[0].value))
 
     def var(self, tree):
-        return TVar(tree[0].value)
+        return TVar(tree[0])
 
     def let(self, tree):
         v, e1, e2 = tree
@@ -160,6 +168,9 @@ class Transmformator(LarkTransformer):
 
     def from_import(self, tree):
         return TFromImport(tree[0], [t.value for t in tree[1:]])
+
+    def qname(self, tree):
+        return ".".join(tree)
 
     def fun(self, tree):
         name, *args, body = tree
@@ -192,7 +203,7 @@ def test_parse():
     assert parse("true") == TBool(True)
     assert parse("false") == TBool(False)
     assert parse("let x = true in x") == TLet("x", TBool(True), TVar("x"))
-    assert parse("from foo import bar tar zar end") == TFromImport(
+    assert parse("from foo import bar tar zar") == TFromImport(
         "foo", "bar tar zar".split()
     )
 
@@ -210,6 +221,13 @@ def test_parse():
     assert parse("100") == TInteger(100)
     assert parse("100 * 100") == TBin([TInteger(100), TOp("*"), TInteger(100)])
 
+    assert parse("foo ()") == TApply(fname=TVar(name='foo'), args=[TUnit()])
+
+    assert parse("fun foo () = 1") == TFun(name=Token('CNAME', 'foo'), args=[TUnit()], body=TInteger(value=1))
+
+    assert parse("foo.bar ()") == TApply(fname=TVar(name='foo.bar'), args=[TUnit()])
+
+
 
 # Compiling stuff
 def indent(i):
@@ -226,6 +244,10 @@ def compile_py_expr(ast) -> str:
         return f"{ast.name}"
     elif type(ast) is TApply:
         fname = compile_py_expr(ast.fname)
+
+        if len(ast.args) == 1 and type(ast.args[0]) is TUnit:
+            return f"{fname}()"
+
         args = ", ".join(compile_py_expr(x) for x in ast.args)
         return f"{fname}({args})"
     elif type(ast) is TString:
@@ -258,10 +280,13 @@ def compile(ast, i=0) -> str:
         s = S()
         s.write(indent(i))
         s.write(f"def {ast.name}")
-        s.write("(")
-        s.write(", ".join(ast.args))
-        s.write("):\n")
-        s.write(indent(i))
+        if len(ast.args) == 1 and type(ast.args[0]) is TUnit:
+            s.write("():\n")
+        else:
+            s.write("(")
+            s.write(", ".join(ast.args)) # type: ignore
+            s.write("):\n")
+            s.write(indent(i))
         body = compile(ast.body, i + 1)
         body = [b for b in body.split("\n") if b]
         body[-1] = re.sub(r"(\s+)(.*)", r"\1return \2\n", body[-1])
@@ -315,11 +340,11 @@ x
     )
 
     assert (
-        pcompile("from foo import bar tar zar end") == "from foo import bar,tar,zar\n"
+        pcompile("from foo import bar tar zar") == "from foo import bar,tar,zar\n"
     )
 
     assert (
-        pcompile("fun id x = x end")
+        pcompile("fun id x = x")
         == """\
 def id(x):
     return x
@@ -327,7 +352,7 @@ def id(x):
     )
 
     assert (
-        pcompile("fun foo x = let y = true in y end")
+        pcompile("fun foo x = let y = true in y")
         == """\
 def foo(x):
     y = True
@@ -348,8 +373,12 @@ z
     )
 
     assert pcompile("f a b c") == "f(a, b, c)"
-
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
+    assert pcompile("foo ()") == "foo()"
+    assert pcompile("fun foo () = 1") == """def foo():
+    return 1
+"""
+    assert pcompile("foo.bar ()") == "foo.bar()"
 
 
 def main():
