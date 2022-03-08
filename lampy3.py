@@ -1,5 +1,6 @@
 import sys
 import re
+from copy import deepcopy, copy
 from argparse import ArgumentParser
 from tempfile import NamedTemporaryFile
 from subprocess import run
@@ -185,6 +186,65 @@ class TBin(AST):
 @dataclass
 class TOp(AST):
     op: str
+
+
+class TyEnv:
+    def __init__(self, data: Dict[str, TAST] = {}):
+        self._data = data
+
+    def _key(self, package, ty) -> str:
+        return f"{package}:{ty}"
+
+    def get(self, package, ty):
+        try:
+            return self._data[self._key(package, ty)]
+        except KeyError:
+            return None
+
+    def set(self, package, ty, value):
+        k = self._key(package, ty)
+        data = copy(self._data)
+        data[k] = value
+        return TyEnv(data)
+
+    def remove(self, package, ty):
+        k = self._key(package, ty)
+        if k not in self._data:
+            return self
+
+        data = copy(self._data)
+        del data[k]
+        return TyEnv(data)
+
+    def merge(self, envs: Iterable["TyEnv"]) -> "TyEnv":
+        d = {k: v for env in (self, *envs) for k, v in env._data.items()}
+        return TyEnv(d)
+
+    def __eq__(self, other) -> bool:
+        return type(other) == TyEnv and self._data == other._data
+
+    def __repr__(self):
+        args = ", ".join(f"{repr(k)}: {repr(v)}" for k, v in self._data.items())
+        return f"TyEnv({{{args}}})"
+
+
+def test_tyenv():
+    t = TyEnv()
+    t1 = t.set("foo", "bar", TyConst("bool"))
+    assert id(t) != id(t1)
+    assert t1.get("foo", "bar") == TyConst("bool")
+    t2 = t1.remove("foo", "bar")
+    assert t1.get("foo", "bar") == TyConst("bool")
+    assert t2.get("foo", "bar") == None
+    t3 = t2.remove("foo", "zar")
+    assert t2 == t3
+
+    x1 = TyEnv({"foo:x": "bar"})
+    x2 = TyEnv({"tar:x": "zar"})
+    x3 = x1.merge([x2])
+    print(x3._data)
+    assert x3.get("foo", "x") == "bar"
+    assert x3.get("tar", "x") == "zar"
 
 
 class Transmformator(LarkTransformer):
@@ -375,6 +435,29 @@ def compile_py_expr(ast) -> str:
             return "(lambda {}: {})".format(", ".join(ast.args), body)  # type: ignore
 
     raise RuntimeError(f"Compile error, {ast} not known")
+
+
+def compile_type_pass(ast, pkgname: str, tyenv: TyEnv) -> TyEnv:
+    "Iterate over an AST and return the type environment"
+    if type(ast) is TScript:
+        return tyenv.merge(compile_type_pass(ast, pkgname, tyenv) for ast in ast.exprs)
+    elif type(ast) is TyDecl:
+        return tyenv.set(pkgname, ast.name, ast.typ)
+
+    return TyEnv()
+
+
+def test_compile_type_pass():
+    assert compile_type_pass(
+        parse("type id = a -> a; type fst = a -> b -> a;"), "__main__", TyEnv()
+    ) == TyEnv(
+        {
+            "__main__:id": TyArrow(t1=TyVar(var="a"), t2=TyVar(var="a")),
+            "__main__:fst": TyArrow(
+                t1=TyVar(var="a"), t2=TyArrow(t1=TyVar(var="b"), t2=TyVar(var="a"))
+            ),
+        }
+    )
 
 
 def compile(ast, i=0) -> str:
