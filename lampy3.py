@@ -6,14 +6,14 @@ from tempfile import NamedTemporaryFile
 from subprocess import run
 from typing import *
 from dataclasses import dataclass
-from lark import Lark, Transformer as LarkTransformer, Token
+from lark import Lark, Transformer as LarkTransformer, Token, Discard
 from io import StringIO as S
 
 grammar = r"""
     start : script
     ?script : stmt | (stmt ";")+
 
-    ?stmt : def_ | import_ | from_import | type_ | expr_1
+    ?stmt : def_ | import_ | from_import | expr_1
     ?expr_1 : let | ifelse | bin_expr | fun | expr_2
     ?expr_2 : appl
     ?expr_3 :  var | const | atom
@@ -21,30 +21,38 @@ grammar = r"""
     type_ : "type"i CNAME "="i tyexpr_1
     ?tyexpr_1 : tyatom | tyarrow
     ?tyatom : tyconst | tyvar | "(" tyexpr_1 ")"
-    !tyvar : /[a-z]/
-    !tyconst : "int" | "bool" | "string"
-    tyarrow : tyatom ("->" tyexpr_1)+
+    !tyvar : VAR_T
+    !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
+    tyarrow : tyatom (ARROW tyexpr_1)+
 
     block : expr_1 | (expr_1 ";")+
 
-    def_            : "def"i CNAME ((CNAME+) | unit) "=" block "end"i?
+    def_            : "def"i CNAME ((CNAME+) | UNIT) (":" tyarrow)? "=" block "end"i?
     from_import     : "from"i qname "import"i qname+
     import_          : "import"i qname
 
-    fun             : "fun"i (CNAME+ | unit) "=>" expr_1
-    let             : "let"i CNAME "=" expr_1 "in" expr_1
-    ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1
-    bin_expr : expr_1 (OP expr_1)+
-    ?appl : appl expr_3+ | expr_3
+    fun             : "fun"i (CNAME+ | UNIT) (":" tyarrow)? FAT_ARROW expr_1
+    let             : "let"i CNAME (":" tyatom)? "=" expr_1 "in" expr_1
+    ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1 (":" tyatom)?
+    bin_expr : expr_1 (OP expr_1)+ (":" tyatom)?
+    ?appl : appl expr_3+ (":" tyatom)? | expr_3
     ?atom : "(" expr_1 ")"
 
-    ?const : bool | ESCAPED_STRING -> string | INT -> integer | unit
-    ?unit : "()"
+    ?const : bool | ESCAPED_STRING -> string | INT -> integer | UNIT
+
     qname : CNAME ("." CNAME)*
     var : qname
     bool : BOOL
 
-    OP : "*" | "+" | "-" | "/" | ">=" | "<=" | "==" | "!=" | ">" | "<"
+    UNIT : "()"
+    VAR_T : /[a-z]/
+    INT_T.30  : "int"
+    BOOL_T.30 : "bool"
+    STRING_T.30 : "string"
+    UNIT_T.30 : "unit"
+    FAT_ARROW.30 : "=>"
+    ARROW.30 : "->"
+    OP.10 : "*" | "+" | "-" | "/" | ">=" | "<=" | "==" | "!=" | ">" | "<"
     BOOL.10 : "true"i | "false"i
 
     %import common.WS
@@ -74,8 +82,7 @@ class TAST:
 
 @dataclass
 class TyArrow(TAST):
-    t1: TAST
-    t2: TAST
+    typ: List[str]
 
 
 @dataclass
@@ -86,12 +93,6 @@ class TyConst(TAST):
 @dataclass
 class TyVar(TAST):
     var: str
-
-
-@dataclass
-class TyDecl(TAST):
-    name: str
-    typ: TAST
 
 
 @dataclass
@@ -113,6 +114,7 @@ class TUnit(AST):
 @dataclass
 class TBool(AST):
     value: bool
+    typ: TAST = TyConst("bool")
 
 
 @dataclass
@@ -120,21 +122,25 @@ class TLet(AST):
     var: str
     e1: AST
     e2: AST
+    typ: Optional[TAST] = None
 
 
 @dataclass
 class TString(AST):
     value: str
+    typ: TAST = TyConst("string")
 
 
 @dataclass
 class TInteger(AST):
     value: int
+    typ: TAST = TyConst("int")
 
 
 @dataclass
 class TVar(AST):
     name: str
+    typ: Optional[TAST] = None
 
 
 @dataclass
@@ -151,6 +157,7 @@ class TImport(AST):
 @dataclass
 class TBlock(AST):
     exprs: List[AST]
+    typ: Optional[TAST] = None
 
 
 @dataclass
@@ -158,12 +165,14 @@ class TDef(AST):
     name: str
     args: Union[List[TUnit], List[str]]
     body: TBlock
+    typ: Optional[TAST] = None
 
 
 @dataclass
 class TFun(AST):
     args: Union[List[TUnit], List[str]]
     body: AST
+    typ: Optional[TAST] = None
 
 
 @dataclass
@@ -171,6 +180,7 @@ class TIfElse(AST):
     cond: AST
     then: AST
     else_: AST
+    typ: Optional[TAST] = None
 
 
 @dataclass
@@ -181,6 +191,7 @@ class TScript(AST):
 @dataclass
 class TBin(AST):
     values: List[AST]
+    typ: Optional[TAST] = None
 
 
 @dataclass
@@ -188,77 +199,20 @@ class TOp(AST):
     op: str
 
 
-class TyEnv:
-    def __init__(self, data: Dict[str, TAST] = {}):
-        self._data = data
-
-    def _key(self, package, ty) -> str:
-        return f"{package}:{ty}"
-
-    def get(self, package, ty):
-        try:
-            return self._data[self._key(package, ty)]
-        except KeyError:
-            return None
-
-    def set(self, package, ty, value):
-        k = self._key(package, ty)
-        data = copy(self._data)
-        data[k] = value
-        return TyEnv(data)
-
-    def remove(self, package, ty):
-        k = self._key(package, ty)
-        if k not in self._data:
-            return self
-
-        data = copy(self._data)
-        del data[k]
-        return TyEnv(data)
-
-    def merge(self, envs: Iterable["TyEnv"]) -> "TyEnv":
-        d = {k: v for env in (self, *envs) for k, v in env._data.items()}
-        return TyEnv(d)
-
-    def __eq__(self, other) -> bool:
-        return type(other) == TyEnv and self._data == other._data
-
-    def __repr__(self):
-        args = ", ".join(f"{repr(k)}: {repr(v)}" for k, v in self._data.items())
-        return f"TyEnv({{{args}}})"
-
-
-def test_tyenv():
-    t = TyEnv()
-    t1 = t.set("foo", "bar", TyConst("bool"))
-    assert id(t) != id(t1)
-    assert t1.get("foo", "bar") == TyConst("bool")
-    t2 = t1.remove("foo", "bar")
-    assert t1.get("foo", "bar") == TyConst("bool")
-    assert t2.get("foo", "bar") == None
-    t3 = t2.remove("foo", "zar")
-    assert t2 == t3
-
-    x1 = TyEnv({"foo:x": "bar"})
-    x2 = TyEnv({"tar:x": "zar"})
-    x3 = x1.merge([x2])
-    print(x3._data)
-    assert x3.get("foo", "x") == "bar"
-    assert x3.get("tar", "x") == "zar"
-
-
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
 
-    def type_(self, tree):
-        return TyDecl(tree[0].value, tree[1])
+    def UNIT(self, tree):
+        return TUnit()
 
     def tyvar(self, tree):
         return TyVar(tree[0].value)
 
     def tyarrow(self, tree):
-        return TyArrow(tree[0], tree[1])
+        args = [t for t in tree if not (type(t) is Token and t.value == "->")]
+        print(args)
+        return TyArrow(args)
 
     def tyconst(self, tree):
         return TyConst(tree[0].value)
@@ -288,8 +242,12 @@ class Transmformator(LarkTransformer):
         return TVar(tree[0])
 
     def let(self, tree):
-        v, e1, e2 = tree
-        return TLet(v, e1, e2)
+        if len(tree) == 3:
+            v, e1, e2 = tree
+            return TLet(v, e1, e2)
+        else:
+            v, typ, e1, e2 = tree
+            return TLet(v, e1, e2, typ)
 
     def import_(self, tree):
         return TImport(tree[0])
@@ -305,11 +263,19 @@ class Transmformator(LarkTransformer):
 
     def def_(self, tree):
         name, *args, body = tree
-        return TDef(name, args, body)
+        if isinstance(args[-1], TAST):
+            typ = args.pop()
+            return TDef(name, args, body, typ)
+        else:
+            return TDef(name, args, body)
 
     def fun(self, tree):
-        *args, body = tree
-        return TFun(args, body)
+        if len(tree) == 4:
+            *args, typ, _, body = tree
+            return TFun(args, body, typ)
+        else:
+            *args, _, body = tree
+            return TFun(args, body)
 
     def ifelse(self, tree):
         return TIfElse(*tree)
@@ -370,25 +336,33 @@ def test_parse():
     assert parse("foo.bar ()") == TApply(fname=TVar(name="foo.bar"), args=[TUnit()])
     assert parse("fun x => x") == TFun(args=[Token("CNAME", "x")], body=TVar(name="x"))
 
-    assert parse("type x = int") == TyDecl(name="x", typ=TyConst(typ="int"))
-    assert parse("type x = int -> string -> bool") == TyDecl(
-        name="x",
-        typ=TyArrow(
-            t1=TyConst(typ="int"),
-            t2=TyArrow(t1=TyConst(typ="string"), t2=TyConst(typ="bool")),
-        ),
+    # type declarations
+    assert parse("fun x : int -> int => x") == TFun(
+        args=[Token("CNAME", "x")],
+        body=TVar(name="x"),
+        typ=TyArrow(typ=[TyConst(typ="int"), TyConst(typ="int")]),
     )
-    assert parse("type f = a -> b -> c") == TyDecl(
-        name="f",
-        typ=TyArrow(
-            t1=TyVar(var="a"), t2=TyArrow(t1=TyVar(var="b"), t2=TyVar(var="c"))
-        ),
+
+    assert parse("let x : int = 1 in x") == TLet(
+        var=Token("CNAME", "x"),
+        e1=TInteger(value=1, typ=TyConst(typ="int")),
+        e2=TVar(name="x", typ=None),
+        typ=TyConst(typ="int"),
     )
-    assert parse("type f = (a -> b) -> c") == TyDecl(
-        name="f",
-        typ=TyArrow(
-            t1=TyArrow(t1=TyVar(var="a"), t2=TyVar(var="b")), t2=TyVar(var="c")
-        ),
+
+    assert parse("def foo () : unit -> int = 1") == TDef(
+        name=Token("CNAME", "foo"),
+        args=[TUnit()],
+        body=TBlock(exprs=[TInteger(value=1)]),
+        typ=TyArrow(typ=[TyConst(typ="unit"), TyConst(typ="int")]),
+    )
+
+    assert parse("if true then false else true : bool") == TIfElse(
+        TBool(True), TBool(False), TBool(True), TyConst(typ="bool")
+    )
+
+    assert parse("(if true then false else true : bool)") == TIfElse(
+        TBool(True), TBool(False), TBool(True), TyConst(typ="bool")
     )
 
 
@@ -435,29 +409,6 @@ def compile_py_expr(ast) -> str:
             return "(lambda {}: {})".format(", ".join(ast.args), body)  # type: ignore
 
     raise RuntimeError(f"Compile error, {ast} not known")
-
-
-def compile_type_pass(ast, pkgname: str, tyenv: TyEnv) -> TyEnv:
-    "Iterate over an AST and return the type environment"
-    if type(ast) is TScript:
-        return tyenv.merge(compile_type_pass(ast, pkgname, tyenv) for ast in ast.exprs)
-    elif type(ast) is TyDecl:
-        return tyenv.set(pkgname, ast.name, ast.typ)
-
-    return TyEnv()
-
-
-def test_compile_type_pass():
-    assert compile_type_pass(
-        parse("type id = a -> a; type fst = a -> b -> a;"), "__main__", TyEnv()
-    ) == TyEnv(
-        {
-            "__main__:id": TyArrow(t1=TyVar(var="a"), t2=TyVar(var="a")),
-            "__main__:fst": TyArrow(
-                t1=TyVar(var="a"), t2=TyArrow(t1=TyVar(var="b"), t2=TyVar(var="a"))
-            ),
-        }
-    )
 
 
 def compile(ast, i=0) -> str:
