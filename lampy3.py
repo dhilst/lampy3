@@ -8,6 +8,7 @@ from typing import *
 from dataclasses import dataclass
 from lark import Lark, Transformer as LarkTransformer, Token, Discard
 from io import StringIO as S
+from functools import partial
 
 grammar = r"""
     start : script
@@ -72,12 +73,39 @@ def parse(input_):
     return Transmformator().transform(let_parser.parse(input_))
 
 
+dataclass = partial(dataclass, eq=False)  # type: ignore
+
+
+class Mixin:
+    # This is injected in another class
+    @staticmethod
+    def _eq(self_, other):
+        if type(self_) != type(other):
+            return False
+
+        for kself in self_.__dict__.keys():
+            if kself == "parent":
+                continue
+
+            if self_.__dict__[kself] != other.__dict__.get(kself):
+                return False
+
+        return True
+
+    @staticmethod
+    def eq(klass):
+        setattr(klass, "__eq__", Mixin._eq)
+        return klass
+
+
+@Mixin.eq
 class TAST:
     pass
 
 
+@Mixin.eq
 class AST:
-    typ: Optional[TAST] = None
+    pass
 
 
 @dataclass
@@ -96,19 +124,15 @@ class TyVar(TAST):
 
 
 @dataclass
-class TList(AST):
-    values: List[AST]
-
-
-@dataclass
 class TApply(AST):
     func: AST
     args: List[AST]
+    typ: Optional[TAST] = None
 
 
 @dataclass
 class TUnit(AST):
-    pass
+    typ: TAST = TyConst("unit")
 
 
 @dataclass
@@ -158,6 +182,7 @@ class TImport(AST):
 class TBlock(AST):
     exprs: List[AST]
     typ: Optional[TAST] = None
+    parent: Optional[AST] = None
 
 
 @dataclass
@@ -166,6 +191,12 @@ class TDef(AST):
     args: Union[List[TUnit], List[str]]
     body: TBlock
     typ: Optional[TAST] = None
+
+    def __post_init__(self):
+        self.body.parent = self
+        for arg in self.args:
+            if hasattr(arg, "parent"):
+                arg.parent = self
 
 
 @dataclass
@@ -394,6 +425,9 @@ def error(*args, **kwargs) -> bool:
 class Typecheck:
     @staticmethod
     def call(parms, args) -> bool:
+        largs, lparms = len(args), len(parms)
+        if largs > lparms:
+            return error(f"To many arguments expected {lparms} found {largs}")
         pairs = zip(parms, (arg.typ for arg in args))
         for t1, t2 in pairs:
             if t1 != t2:
