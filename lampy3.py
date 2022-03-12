@@ -72,17 +72,17 @@ def parse(input_):
     return Transmformator().transform(let_parser.parse(input_))
 
 
-class AST:
-    pass
-
-
 class TAST:
     pass
 
 
+class AST:
+    typ: Optional[TAST] = None
+
+
 @dataclass
 class TyArrow(TAST):
-    typ: List[str]
+    parms: List[str]
 
 
 @dataclass
@@ -102,7 +102,7 @@ class TList(AST):
 
 @dataclass
 class TApply(AST):
-    fname: AST
+    func: AST
     args: List[AST]
 
 
@@ -199,6 +199,23 @@ class TOp(AST):
     op: str
 
 
+class Env:
+    _data: Dict[str, AST] = {}
+
+    @staticmethod
+    def save(f):
+        def _inner(*args, **kwargs):
+            ast = f(*args, **kwargs)
+            Env._data[ast.name] = ast
+            return ast
+
+        return _inner
+
+    @staticmethod
+    def lookup(name):
+        return Env._data.get(name)
+
+
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
@@ -210,9 +227,11 @@ class Transmformator(LarkTransformer):
         return TyVar(tree[0].value)
 
     def tyarrow(self, tree):
-        args = [t for t in tree if not (type(t) is Token and t.value == "->")]
-        print(args)
-        return TyArrow(args)
+        t1, _, t2 = tree
+        if type(t2) is TyArrow:
+            return TyArrow([t1, *t2.parms])
+        else:
+            return TyArrow([t1, t2])
 
     def tyconst(self, tree):
         return TyConst(tree[0].value)
@@ -261,6 +280,7 @@ class Transmformator(LarkTransformer):
     def block(self, tree):
         return TBlock(tree)
 
+    @Env.save
     def def_(self, tree):
         name, *args, body = tree
         if isinstance(args[-1], TAST):
@@ -326,21 +346,21 @@ def test_parse():
     assert parse("100") == TInteger(100)
     assert parse("100 * 100") == TBin([TInteger(100), TOp("*"), TInteger(100)])
 
-    assert parse("foo ()") == TApply(fname=TVar(name="foo"), args=[TUnit()])
+    assert parse("foo ()") == TApply(func=TVar(name="foo"), args=[TUnit()])
 
     assert parse("def foo () = 1") == TDef(
         name=Token("CNAME", "foo"),
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
     )
-    assert parse("foo.bar ()") == TApply(fname=TVar(name="foo.bar"), args=[TUnit()])
+    assert parse("foo.bar ()") == TApply(func=TVar(name="foo.bar"), args=[TUnit()])
     assert parse("fun x => x") == TFun(args=[Token("CNAME", "x")], body=TVar(name="x"))
 
     # type declarations
     assert parse("fun x : int -> int => x") == TFun(
         args=[Token("CNAME", "x")],
         body=TVar(name="x"),
-        typ=TyArrow(typ=[TyConst(typ="int"), TyConst(typ="int")]),
+        typ=TyArrow(parms=[TyConst(typ="int"), TyConst(typ="int")]),
     )
 
     assert parse("let x : int = 1 in x") == TLet(
@@ -354,7 +374,7 @@ def test_parse():
         name=Token("CNAME", "foo"),
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
-        typ=TyArrow(typ=[TyConst(typ="unit"), TyConst(typ="int")]),
+        typ=TyArrow(parms=[TyConst(typ="unit"), TyConst(typ="int")]),
     )
 
     assert parse("if true then false else true : bool") == TIfElse(
@@ -366,9 +386,63 @@ def test_parse():
     )
 
 
-# Compiling stuff
-def indent(i):
-    return " " * i * 4
+def error(*args, **kwargs) -> bool:
+    print(*args, file=sys.stderr, **kwargs)
+    return False
+
+
+class Typecheck:
+    @staticmethod
+    def call(parms, args) -> bool:
+        pairs = zip(parms, (arg.typ for arg in args))
+        for t1, t2 in pairs:
+            if t1 != t2:
+                return error("Expecting type {t1}, found {t2}")
+        return True
+
+
+@no_type_check
+def compile_typecheck(ast: AST) -> bool:
+    if type(ast) == TScript:
+        return all(compile_typecheck(n) for n in ast.exprs)
+    elif type(ast) == TApply:
+        if type(ast.func) is TVar:
+            func = Env.lookup(ast.func.name)
+            if func is None:
+                return error(f"Couldn't find type for function {ast.func.name}")
+            assert type(func) is TDef
+        elif type(ast.func) is TFun:
+            func = ast.func
+        else:
+            assert False
+        return Typecheck.call(func.typ.parms[:-1], ast.args)
+
+    elif type(ast) in (TDef,):
+        return True
+    else:
+        return error(f"Unexpected node {ast}")
+
+
+def test_typechecker():
+    assert (
+        compile_typecheck(parse("def foo x y : int -> int -> int = x + y;; foo 1 2;"))
+        == True
+    )
+    assert parse("fun a f : int -> (int -> int) -> int => f a") == TFun(
+        args=[
+            Token("CNAME", "a"),
+            Token("CNAME", "f"),
+            TyArrow(
+                parms=[
+                    TyConst(typ="int"),
+                    TyArrow(parms=[TyConst(typ="int"), TyConst(typ="int")]),
+                    TyConst(typ="int"),
+                ]
+            ),
+        ],
+        body=TApply(func=TVar(name="f", typ=None), args=[TVar(name="a", typ=None)]),
+        typ=None,
+    )
 
 
 def compile_py_expr(ast) -> str:
@@ -380,7 +454,7 @@ def compile_py_expr(ast) -> str:
     elif type(ast) is TVar:
         return f"{ast.name}"
     elif type(ast) is TApply:
-        fname = compile_py_expr(ast.fname)
+        fname = compile_py_expr(ast.func)
 
         if len(ast.args) == 1 and type(ast.args[0]) is TUnit:
             return f"{fname}()"
@@ -409,6 +483,11 @@ def compile_py_expr(ast) -> str:
             return "(lambda {}: {})".format(", ".join(ast.args), body)  # type: ignore
 
     raise RuntimeError(f"Compile error, {ast} not known")
+
+
+# Compiling stuff
+def indent(i):
+    return " " * i * 4
 
 
 def compile(ast, i=0) -> str:
