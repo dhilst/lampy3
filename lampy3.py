@@ -105,7 +105,7 @@ class TAST:
 
 @Mixin.eq
 class AST:
-    pass
+    parent: Optional["AST"] = None
 
 
 @dataclass
@@ -129,6 +129,11 @@ class TApply(AST):
     args: List[AST]
     typ: Optional[TAST] = None
 
+    def __post_init__(self):
+        self.func.parent = self
+        for arg in self.args:
+            arg.parent = self.parent
+
 
 @dataclass
 class TUnit(AST):
@@ -147,6 +152,10 @@ class TLet(AST):
     e1: AST
     e2: AST
     typ: Optional[TAST] = None
+
+    def __post_init__(self):
+        self.e1.parent = self
+        self.e2.parent = self
 
 
 @dataclass
@@ -182,7 +191,10 @@ class TImport(AST):
 class TBlock(AST):
     exprs: List[AST]
     typ: Optional[TAST] = None
-    parent: Optional[AST] = None
+
+    def __post_init__(self):
+        for expr in self.exprs:
+            expr.parent = self
 
 
 @dataclass
@@ -195,7 +207,7 @@ class TDef(AST):
     def __post_init__(self):
         self.body.parent = self
         for arg in self.args:
-            if hasattr(arg, "parent"):
+            if isinstance(arg, AST):
                 arg.parent = self
 
 
@@ -205,6 +217,9 @@ class TFun(AST):
     body: AST
     typ: Optional[TAST] = None
 
+    def __post_init__(self):
+        self.body.parent = self
+
 
 @dataclass
 class TIfElse(AST):
@@ -213,10 +228,19 @@ class TIfElse(AST):
     else_: AST
     typ: Optional[TAST] = None
 
+    def __post_init__(self):
+        self.cond.parent = self
+        self.then.parent = self
+        self.else_.parent = self
+
 
 @dataclass
 class TScript(AST):
     exprs: List[AST]
+
+    def __post_init__(self):
+        for expr in self.exprs:
+            expr.parent = self
 
 
 @dataclass
@@ -224,27 +248,14 @@ class TBin(AST):
     values: List[AST]
     typ: Optional[TAST] = None
 
+    def __post_init__(self):
+        for v in self.values:
+            v.parent = self
+
 
 @dataclass
 class TOp(AST):
     op: str
-
-
-class Env:
-    _data: Dict[str, AST] = {}
-
-    @staticmethod
-    def save(f):
-        def _inner(*args, **kwargs):
-            ast = f(*args, **kwargs)
-            Env._data[ast.name] = ast
-            return ast
-
-        return _inner
-
-    @staticmethod
-    def lookup(name):
-        return Env._data.get(name)
 
 
 class Transmformator(LarkTransformer):
@@ -294,10 +305,10 @@ class Transmformator(LarkTransformer):
     def let(self, tree):
         if len(tree) == 3:
             v, e1, e2 = tree
-            return TLet(v, e1, e2)
+            return TLet(v.value if type(v) is Token else v, e1, e2)
         else:
             v, typ, e1, e2 = tree
-            return TLet(v, e1, e2, typ)
+            return TLet(v.value if type(v) is Token else v, e1, e2, typ)
 
     def import_(self, tree):
         return TImport(tree[0])
@@ -311,9 +322,9 @@ class Transmformator(LarkTransformer):
     def block(self, tree):
         return TBlock(tree)
 
-    @Env.save
     def def_(self, tree):
         name, *args, body = tree
+        args = list(a.value if type(a) is Token else a for a in args)
         if isinstance(args[-1], TAST):
             typ = args.pop()
             return TDef(name, args, body, typ)
@@ -323,6 +334,7 @@ class Transmformator(LarkTransformer):
     def fun(self, tree):
         if len(tree) == 4:
             *args, typ, _, body = tree
+            args = list(a.value if type(a) is Token else a for a in args)
             return TFun(args, body, typ)
         else:
             *args, _, body = tree
@@ -458,25 +470,7 @@ def compile_typecheck(ast: AST) -> bool:
 
 
 def test_typechecker():
-    assert (
-        compile_typecheck(parse("def foo x y : int -> int -> int = x + y;; foo 1 2;"))
-        == True
-    )
-    assert parse("fun a f : int -> (int -> int) -> int => f a") == TFun(
-        args=[
-            Token("CNAME", "a"),
-            Token("CNAME", "f"),
-            TyArrow(
-                parms=[
-                    TyConst(typ="int"),
-                    TyArrow(parms=[TyConst(typ="int"), TyConst(typ="int")]),
-                    TyConst(typ="int"),
-                ]
-            ),
-        ],
-        body=TApply(func=TVar(name="f", typ=None), args=[TVar(name="a", typ=None)]),
-        typ=None,
-    )
+    pass
 
 
 def compile_py_expr(ast) -> str:
