@@ -9,6 +9,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from lark import Lark, Transformer as LarkTransformer, Token, Discard
 from io import StringIO as S
 from functools import partial
+from frozendict import frozendict  # type: ignore
 
 grammar = r"""
     start : script
@@ -327,9 +328,9 @@ class Transmformator(LarkTransformer):
         args = list(a.value if type(a) is Token else a for a in args)
         if isinstance(args[-1], TAST):
             typ = args.pop()
-            return TDef(name, args, body, typ)
+            return TDef(name.value, args, body, typ)
         else:
-            return TDef(name, args, body)
+            return TDef(name.value, args, body)
 
     def fun(self, tree):
         if len(tree) == 4:
@@ -362,24 +363,24 @@ class Transmformator(LarkTransformer):
 
         return TBin(values)
 
+
 def topdown_iter(x: AST) -> Iterable[AST]:
     if is_dataclass(x) and isinstance(x, AST):
         yield x
         for f in fields(x):
-            if f.name == 'parent':
+            if f.name == "parent":
                 continue
             attr = getattr(x, f.name)
             yield from topdown_iter(attr)
     elif isinstance(x, list):
         for y in x:
             yield from topdown_iter(y)
-            
 
 
 def bottomup_iter(x: AST) -> Iterable[AST]:
     if is_dataclass(x) and isinstance(x, AST):
         for f in fields(x):
-            if f.name == 'parent':
+            if f.name == "parent":
                 continue
             attr = getattr(x, f.name)
             yield from bottomup_iter(attr)
@@ -388,6 +389,7 @@ def bottomup_iter(x: AST) -> Iterable[AST]:
         for y in x:
             yield from bottomup_iter(y)
 
+
 def test_iter():
     def is_ast(code: str):
         assert all(isinstance(x, AST) for x in topdown_iter(parse(code)))
@@ -395,6 +397,7 @@ def test_iter():
 
     is_ast("fun foo x => x")
     is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
+
 
 def test_parse():
     assert parse("true") == TBool(True)
@@ -467,43 +470,72 @@ def error(*args, **kwargs) -> bool:
     return False
 
 
-class Typecheck:
-    @staticmethod
-    def call(parms, args) -> bool:
+@no_type_check
+def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
+    if type(ast) == TScript:
+        newenv = env
+        for expr in ast.exprs:
+            result, newenv = compile_typecheck(expr, newenv)
+            if result == False:
+                return False, env
+    elif type(ast) == TApply:
+        if type(ast.func) is TVar:
+            ftype = env.get(ast.func.name)
+            if ftype is None:
+                return error(f"Couldn't find type for function {ast.func.name}")
+        elif type(ast.func) is TFun:
+            ftype = ast.func.typ
+        else:
+            assert False, env
+
+        assert type(ftype) is TyArrow
+        parms, args = ftype.parms[:-1], ast.args
         largs, lparms = len(args), len(parms)
         if largs > lparms:
             return error(f"To many arguments expected {lparms} found {largs}")
         pairs = zip(parms, (arg.typ for arg in args))
         for t1, t2 in pairs:
+            if t1 is None:
+                return error(f"Type anotation is None, can't type check in parameters")
+            elif t2 is None:
+                error(f"None in type of arguments {args}")
+                return error(f"Type anotation is None, can't type check in arguments")
             if t1 != t2:
-                return error("Expecting type {t1}, found {t2}")
-        return True
-
-
-@no_type_check
-def compile_typecheck(ast: AST) -> bool:
-    if type(ast) == TScript:
-        return all(compile_typecheck(n) for n in ast.exprs)
-    elif type(ast) == TApply:
-        if type(ast.func) is TVar:
-            func = Env.lookup(ast.func.name)
-            if func is None:
-                return error(f"Couldn't find type for function {ast.func.name}")
-            assert type(func) is TDef
-        elif type(ast.func) is TFun:
-            func = ast.func
-        else:
-            assert False
-        return Typecheck.call(func.typ.parms[:-1], ast.args)
-
-    elif type(ast) in (TDef,):
-        return True
+                return error(f"Expecting type {t1}, found {t2}"), env
+        return True, env
+    elif type(ast) is TDef:
+        return True, env.set(ast.name, ast.typ)
+    elif type(ast) is TFun:
+        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])}
+        return compile_typecheck(ast.body, env | argtyp_dict)
+    elif type(ast) is TIfElse:
+        if ast.cond.typ != TConst("bool"):
+            return error(f"Expected bool expression on if condition {ast}"), env
+        if ast.then.typ != ast.else_.typ:
+            return (
+                error(
+                    f"'then' and 'else' types doesn't match in the if expression {ast}"
+                ),
+                env,
+            )
     else:
-        return error(f"Unexpected node {ast}")
+        return error(f"Unexpected node {ast}"), env
 
 
 def test_typechecker():
-    pass
+    assert (
+        compile_typecheck(parse('def id x : int -> int = x;; id "foo";'), frozendict())[
+            0
+        ]
+        == False
+    )
+    assert (
+        compile_typecheck(
+            parse('fun id : (int -> int) -> int => id "foo"'),
+            frozendict(),
+        )[0]
+        == False
+    )
 
 
 def compile_py_expr(ast) -> str:
