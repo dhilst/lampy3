@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 from tempfile import NamedTemporaryFile
 from subprocess import run
 from typing import *
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from lark import Lark, Transformer as LarkTransformer, Token, Discard
 from io import StringIO as S
 from functools import partial
@@ -362,6 +362,39 @@ class Transmformator(LarkTransformer):
 
         return TBin(values)
 
+def topdown_iter(x: AST) -> Iterable[AST]:
+    if is_dataclass(x) and isinstance(x, AST):
+        yield x
+        for f in fields(x):
+            if f.name == 'parent':
+                continue
+            attr = getattr(x, f.name)
+            yield from topdown_iter(attr)
+    elif isinstance(x, list):
+        for y in x:
+            yield from topdown_iter(y)
+            
+
+
+def bottomup_iter(x: AST) -> Iterable[AST]:
+    if is_dataclass(x) and isinstance(x, AST):
+        for f in fields(x):
+            if f.name == 'parent':
+                continue
+            attr = getattr(x, f.name)
+            yield from bottomup_iter(attr)
+        yield x
+    elif isinstance(x, list):
+        for y in x:
+            yield from bottomup_iter(y)
+
+def test_iter():
+    def is_ast(code: str):
+        assert all(isinstance(x, AST) for x in topdown_iter(parse(code)))
+        assert all(isinstance(x, AST) for x in bottomup_iter(parse(code)))
+
+    is_ast("fun foo x => x")
+    is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
 
 def test_parse():
     assert parse("true") == TBool(True)
