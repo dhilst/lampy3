@@ -107,6 +107,7 @@ class TAST:
 @Mixin.eq
 class AST:
     parent: Optional["AST"] = None
+    typ: Optional["TAST"] = None
 
 
 @dataclass
@@ -470,19 +471,18 @@ def error(*args, **kwargs) -> bool:
     return False
 
 
-@no_type_check
 def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
-    if type(ast) == TScript:
+    if type(ast) is TScript:
         newenv = env
         for expr in ast.exprs:
             result, newenv = compile_typecheck(expr, newenv)
             if result == False:
                 return False, env
-    elif type(ast) == TApply:
+    elif type(ast) is TApply:
         if type(ast.func) is TVar:
-            ftype = env.get(ast.func.name)
+            ftype = env.get(ast.func.name) 
             if ftype is None:
-                return error(f"Couldn't find type for function {ast.func.name}")
+                return error(f"Couldn't find type for function {ast.func.name}"), env
         elif type(ast.func) is TFun:
             ftype = ast.func.typ
         else:
@@ -492,25 +492,28 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
         parms, args = ftype.parms[:-1], ast.args
         largs, lparms = len(args), len(parms)
         if largs > lparms:
-            return error(f"To many arguments expected {lparms} found {largs}")
+            return error(f"To many arguments expected {lparms} found {largs}"), env
         pairs = zip(parms, (arg.typ for arg in args))
         for t1, t2 in pairs:
             if t1 is None:
                 return error(f"Type anotation is None, can't type check in parameters")
             elif t2 is None:
                 error(f"None in type of arguments {args}")
-                return error(f"Type anotation is None, can't type check in arguments")
+                return error(f"Type anotation is None, can't type check in arguments"), env
             if t1 != t2:
                 return error(f"Expecting type {t1}, found {t2}"), env
         return True, env
     elif type(ast) is TDef:
         return True, env.set(ast.name, ast.typ)
     elif type(ast) is TFun:
-        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])}
+        if ast.typ is None:
+            return error(f"None type in anonymous function"), env
+        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])} # type: ignore
         return compile_typecheck(ast.body, env | argtyp_dict)
     elif type(ast) is TIfElse:
-        if ast.cond.typ != TConst("bool"):
+        if ast.cond.typ != TyConst("bool"):
             return error(f"Expected bool expression on if condition {ast}"), env
+        
         if ast.then.typ != ast.else_.typ:
             return (
                 error(
@@ -518,8 +521,28 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
                 ),
                 env,
             )
-    else:
-        return error(f"Unexpected node {ast}"), env
+        return True, env
+    elif type(ast) is TBin:
+        a, op, b = ast.values
+        if not compile_typecheck(a, env)[0]:
+            return False, env
+        elif not compile_typecheck(b, env)[0]:
+            return False, env
+        elif a.typ is None or b.typ is None:
+            return error("None type in binary expression"), env
+        elif a.typ != b.typ:
+            return error(f"Expected {a.typ} but found {b.typ}"), env
+        else:
+            ast.typ = a.typ
+            return True, env
+    elif type(ast) is TLet:
+        typ = ast.typ if ast.typ is not None else ast.e1.typ
+        return compile_typecheck(ast.e2, env | {ast.var: typ})
+    elif type(ast) in (TBool,TVar,TImport,TFromImport,TInteger):
+        return True, env
+
+
+    return error(f"Unexpected node {ast}"), env
 
 
 def test_typechecker():
@@ -622,8 +645,13 @@ def compile(ast, i=0) -> str:
         return indent(i) + compile_py_expr(ast)
 
 
-def pcompile(inp):
-    return compile(parse(inp))
+def pcompile(inp, typecheck=True):
+    ast = parse(inp)
+    if typecheck:
+        welltyped, _ = compile_typecheck(ast, frozendict())
+        if not welltyped:
+            raise RuntimeError("Typecheck error")
+    return compile(ast)
 
 
 def compile_opened_file(openf: TextIO) -> str:
@@ -700,18 +728,18 @@ z
 """
     )
 
-    assert pcompile("f a b c") == "f(a, b, c)"
+    assert pcompile("f a b c", False) == "f(a, b, c)"
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
-    assert pcompile("foo ()") == "foo()"
+    assert pcompile("foo ()", False) == "foo()"
     assert (
         pcompile("def foo () = 1")
         == """def foo():
     return 1
 """
     )
-    assert pcompile("foo.bar ()") == "foo.bar()"
+    assert pcompile("foo.bar ()", False) == "foo.bar()"
 
-    assert pcompile("fun x => x") == "(lambda x: x)"
+    assert pcompile("fun x => x", False) == "(lambda x: x)"
 
 
 def main():
