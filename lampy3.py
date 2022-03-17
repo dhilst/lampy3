@@ -471,6 +471,40 @@ def error(*args, **kwargs) -> bool:
     return False
 
 
+def unify_types(t1: TAST, t2: TAST) -> bool:
+    if type(t1) is TyConst and type(t2) is TyConst:
+        return t1.typ == t2.typ  # type: ignore
+    elif type(t1) is TyVar and type(t2) is TyConst:
+        return True
+    elif type(t1) is TyConst and type(t2) is TyVar:
+        return True
+    elif type(t1) is TyVar and type(t2) is TyVar:
+        return t1.var == t2.var  # type: ignore
+    elif type(t1) is TyArrow and type(t2) is TyArrow:
+        # this is wrong because
+        # unify a -> a, b -> b is false
+        # and should be true
+        return len(t1.parms) == len(t2.parms) and all(  # type: ignore
+            unify_types(t1_, t2_) for t1_, t2_ in zip(t1.parms, t2.parms)  # type: ignore
+        )
+    else:
+        return False
+
+
+def test_unify_types():
+    assert unify_types(TyVar("a"), TyVar("a"))
+    assert unify_types(TyVar("a"), TyConst("int"))
+    assert unify_types(TyConst("int"), TyVar("a"))
+    assert unify_types(
+        TyArrow([TyVar("a"), TyVar("a")]), TyArrow([TyVar("a"), TyVar("a")])
+    )
+    assert unify_types(TyConst("int"), TyConst("int"))
+    assert unify_types(TyConst("int"), TyConst("bool")) == False
+    assert unify_types(TyArrow([TyVar("a"), TyVar("a")]), TyConst("int")) == False
+    assert unify_types(TyConst("int"), TyArrow([TyVar("a"), TyVar("a")])) == False
+
+
+@no_type_check
 def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
     if type(ast) is TScript:
         newenv = env
@@ -480,7 +514,7 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
                 return False, env
     elif type(ast) is TApply:
         if type(ast.func) is TVar:
-            ftype = env.get(ast.func.name) 
+            ftype = env.get(ast.func.name)
             if ftype is None:
                 return error(f"Couldn't find type for function {ast.func.name}"), env
         elif type(ast.func) is TFun:
@@ -499,8 +533,8 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
                 return error(f"Type anotation is None, can't type check in parameters")
             elif t2 is None:
                 error(f"None in type of arguments {args}")
-                return error(f"Type anotation is None, can't type check in arguments"), env
-            if t1 != t2:
+                return error(f"Type anotation is None, can't type check in arguments")
+            if unify_types(t1, t2) == False:
                 return error(f"Expecting type {t1}, found {t2}"), env
         return True, env
     elif type(ast) is TDef:
@@ -508,12 +542,12 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
     elif type(ast) is TFun:
         if ast.typ is None:
             return error(f"None type in anonymous function"), env
-        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])} # type: ignore
+        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])}  # type: ignore
         return compile_typecheck(ast.body, env | argtyp_dict)
     elif type(ast) is TIfElse:
         if ast.cond.typ != TyConst("bool"):
             return error(f"Expected bool expression on if condition {ast}"), env
-        
+
         if ast.then.typ != ast.else_.typ:
             return (
                 error(
@@ -538,9 +572,8 @@ def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
     elif type(ast) is TLet:
         typ = ast.typ if ast.typ is not None else ast.e1.typ
         return compile_typecheck(ast.e2, env | {ast.var: typ})
-    elif type(ast) in (TBool,TVar,TImport,TFromImport,TInteger):
+    elif type(ast) in (TBool, TVar, TImport, TFromImport, TInteger):
         return True, env
-
 
     return error(f"Unexpected node {ast}"), env
 
@@ -558,6 +591,26 @@ def test_typechecker():
             frozendict(),
         )[0]
         == False
+    )
+    assert (
+        compile_typecheck(
+            parse('fun id : (a -> a) -> a => id "foo"'),
+            frozendict(),
+        )[0]
+        == True
+    )
+    assert (
+        compile_typecheck(
+            parse(
+                """def test_id id : (a -> a) -> unit =
+                     id "foo";
+                     id 1;
+                     ();;
+                """
+            ),
+            frozendict(),
+        )[0]
+        == True
     )
 
 
