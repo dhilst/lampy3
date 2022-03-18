@@ -112,7 +112,10 @@ class AST:
 
 @dataclass
 class TyArrow(TAST):
+    # @FIXME : this should be TAST and not str
+    # arrows may contain arrows
     parms: List[str]
+
 
 
 @dataclass
@@ -470,6 +473,42 @@ def error(*args, **kwargs) -> bool:
     print(*args, file=sys.stderr, **kwargs)
     return False
 
+# only for testing
+def _arrow(text):
+    tokens = [x for x in text.split() if x != "->"]
+    return TyArrow(tokens)
+
+def test_parsearrow():
+    assert _arrow("a -> b -> c") == TyArrow("a b c".split())
+
+def subst_types(x: str, by: str, ast: TAST) -> TAST:
+    if type(ast) is TyConst:
+        return ast
+    elif type(ast) is TyVar:
+        return TyVar(by) if ast.var == x else ast # type: ignore
+    elif type(ast) is TyArrow:
+        return TyArrow([(by if p == x else p) for p in ast.parms]) # type: ignore
+    else:
+        raise TypeError(f"Unknow TAST {ast}")
+
+def test_subst_types():
+    assert subst_types("x", "y", TyConst("bool")) == TyConst("bool")
+    assert subst_types("x", "y", TyVar("z")) == TyVar("z")
+    assert subst_types("x", "y", TyVar("x")) == TyVar("y")
+    assert subst_types("x", "y", _arrow("x -> y")) == _arrow("y -> y")
+    assert subst_types("x", "y", _arrow("a -> a")) == _arrow("a -> a")
+
+def normalize_arrow(a1: TyArrow, a2: TyArrow) -> Optional[TyArrow]:
+    if len(a1.parms) == len(a2.parms):
+        for a1arg, a2arg in zip(a1.parms, a2.parms):
+            a2 = cast(TyArrow, subst_types(a2arg, a1arg, a2)) # this is wrong
+        return a2
+    return None
+
+def test_normalize_arrow():
+    assert normalize_arrow(_arrow("a -> b"), _arrow("c -> d")) == _arrow("a -> b")
+    assert normalize_arrow(_arrow("a -> b"), _arrow("b -> a")) == _arrow("a -> b") # oops
+    # i need real alpha conversion
 
 def unify_types(t1: TAST, t2: TAST) -> bool:
     if type(t1) is TyConst and type(t2) is TyConst:
