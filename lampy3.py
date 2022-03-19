@@ -25,7 +25,8 @@ grammar = r"""
     ?tyatom : tyconst | tyvar | "(" tyexpr_1 ")"
     !tyvar : VAR_T
     !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
-    tyarrow : tyatom (ARROW tyexpr_1)+
+    tyarrow : forall? tyatom (ARROW tyexpr_1)+
+    forall : "forall"i CNAME+ "."i
 
     block : expr_1 | (expr_1 ";")+
 
@@ -112,10 +113,8 @@ class AST:
 
 @dataclass
 class TyArrow(TAST):
-    # @FIXME : this should be TAST and not str
-    # arrows may contain arrows
-    parms: List[str]
-
+    parms: List[TAST]
+    forall: Optional[List[str]] = None
 
 
 @dataclass
@@ -273,12 +272,17 @@ class Transmformator(LarkTransformer):
     def tyvar(self, tree):
         return TyVar(tree[0].value)
 
+    def forall(self, tree):
+        return [t.value for t in tree]
+
     def tyarrow(self, tree):
-        t1, _, t2 = tree
-        if type(t2) is TyArrow:
-            return TyArrow([t1, *t2.parms])
+        if len(tree) == 3:
+            t1, _, t2 = tree
+            forall = None
         else:
-            return TyArrow([t1, t2])
+            forall, t1, _, t2 = tree
+
+        return TyArrow([t1, t2], forall)
 
     def tyconst(self, tree):
         return TyConst(tree[0].value)
@@ -432,29 +436,29 @@ def test_parse():
     assert parse("foo ()") == TApply(func=TVar(name="foo"), args=[TUnit()])
 
     assert parse("def foo () = 1") == TDef(
-        name=Token("CNAME", "foo"),
+        name="foo",
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
     )
     assert parse("foo.bar ()") == TApply(func=TVar(name="foo.bar"), args=[TUnit()])
-    assert parse("fun x => x") == TFun(args=[Token("CNAME", "x")], body=TVar(name="x"))
+    assert parse("fun x => x") == TFun(args=["x"], body=TVar(name="x"))
 
     # type declarations
     assert parse("fun x : int -> int => x") == TFun(
-        args=[Token("CNAME", "x")],
+        args=["x"],
         body=TVar(name="x"),
         typ=TyArrow(parms=[TyConst(typ="int"), TyConst(typ="int")]),
     )
 
     assert parse("let x : int = 1 in x") == TLet(
-        var=Token("CNAME", "x"),
+        var="x",
         e1=TInteger(value=1, typ=TyConst(typ="int")),
         e2=TVar(name="x", typ=None),
         typ=TyConst(typ="int"),
     )
 
     assert parse("def foo () : unit -> int = 1") == TDef(
-        name=Token("CNAME", "foo"),
+        name="foo",
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
         typ=TyArrow(parms=[TyConst(typ="unit"), TyConst(typ="int")]),
@@ -468,47 +472,157 @@ def test_parse():
         TBool(True), TBool(False), TBool(True), TyConst(typ="bool")
     )
 
+    assert parse("fun x y : forall a b. a -> b -> a => x") == TFun(
+        args=[
+            "x",
+            "y",
+            TyArrow(
+                parms=[
+                    TyVar(var="a"),
+                    TyArrow(parms=[TyVar(var="b"), TyVar(var="a")], forall=None),
+                ],
+                forall=["a", "b"],
+            ),
+        ],
+        body=TVar(name="x", typ=None),
+        typ=None,
+    )
+
+    assert parse("fun id : (forall a. a -> a) -> (forall b. b -> b) => id") == TFun(
+        args=["id"],
+        body=TVar(name="id", typ=None),
+        typ=TyArrow(
+            parms=[
+                TyArrow(parms=[TyVar(var="a"), TyVar(var="a")], forall=["a"]),
+                TyArrow(parms=[TyVar(var="b"), TyVar(var="b")], forall=["b"]),
+            ],
+            forall=None,
+        ),
+    )
+
 
 def error(*args, **kwargs) -> bool:
     print(*args, file=sys.stderr, **kwargs)
     return False
 
+
 # only for testing
-def _arrow(text):
-    tokens = [x for x in text.split() if x != "->"]
-    return TyArrow(tokens)
+def _arrow(inp):
+    def tokenize(inp):
+        tokens = (x for x in inp.split())
+        for t in tokens:
+            lpar = t.split("(")
+            for x in lpar:
+                if x == "":
+                    yield "("
+                else:
+                    rpar = x.split(")")
+                    for y in rpar:
+                        if y == "":
+                            yield ")"
+                        else:
+                            yield y
+
+    def parse(tokens, acc=[]):
+        if not tokens:
+            return acc
+        la, *tokens = tokens
+        if la == "(":
+            return acc + parse(tokens, [])
+        elif la == ")":
+            return [acc] + parse(tokens, [])
+        else:
+            return parse(tokens, acc + [la])
+
+    def to_atom(ast):
+        if ast in ("bool", "int", "string"):
+            return TyConst(ast)
+        else:
+            return TyVar(ast)
+
+    def to_tyarrow(ast) -> TyArrow:
+        return TyArrow(
+            [to_atom(x) if type(x) is str else to_tyarrow(x) for x in ast if x != "->"]
+        )
+
+    tokens = tokenize(inp)
+    ast = parse(tokens)
+    return to_tyarrow(ast)
+
+
+def _arrow_unparse(ast: TAST):  # arbitrary nested list of strs
+    def from_atom(ast):
+        if type(ast) is TyConst:
+            return ast.typ
+        else:
+            return ast.var
+
+    if type(ast) is TyArrow:
+        return " -> ".join(
+            "({})".format(_arrow_unparse(arg))
+            if type(arg) is TyArrow
+            else from_atom(arg)
+            for arg in ast.parms
+        )
+
+
+def _arrow_pretty(string):
+    string = re.sub(r" \)", r")", string)
+    string = re.sub(r" $", "", string)
+    return string
+
 
 def test_parsearrow():
-    assert _arrow("a -> b -> c") == TyArrow("a b c".split())
+    assert (
+        _arrow_pretty(_arrow_unparse(_arrow("a -> (b -> c) -> d")))
+        == "a -> (b -> c) -> d"
+    )
+    assert _arrow("a -> (b -> c) -> a") == TyArrow(
+        parms=[
+            TyVar(var="a"),
+            TyArrow(parms=[TyVar(var="b"), TyVar(var="c")]),
+            TyVar(var="a"),
+        ]
+    )
+    assert _arrow("int -> bool") == TyArrow(
+        parms=[TyConst(typ="int"), TyConst(typ="bool")]
+    )
 
-def subst_types(x: str, by: str, ast: TAST) -> TAST:
-    if type(ast) is TyConst:
-        return ast
-    elif type(ast) is TyVar:
-        return TyVar(by) if ast.var == x else ast # type: ignore
-    elif type(ast) is TyArrow:
-        return TyArrow([(by if p == x else p) for p in ast.parms]) # type: ignore
-    else:
-        raise TypeError(f"Unknow TAST {ast}")
 
-def test_subst_types():
-    assert subst_types("x", "y", TyConst("bool")) == TyConst("bool")
-    assert subst_types("x", "y", TyVar("z")) == TyVar("z")
-    assert subst_types("x", "y", TyVar("x")) == TyVar("y")
-    assert subst_types("x", "y", _arrow("x -> y")) == _arrow("y -> y")
-    assert subst_types("x", "y", _arrow("a -> a")) == _arrow("a -> a")
+def make_subst(l1, l2) -> Dict[int, TAST]:
+    return {i: a for a, b in zip(l1, l2) for i, x in enumerate(l2) if x == b}
+
+
+def test_make_subst():
+    assert make_subst(_arrow("a -> b").parms, _arrow("b -> a").parms) == {
+        0: TyVar(var="a"),
+        1: TyVar(var="b"),
+    }
+
+
+def apply_subst(l: List[TAST], s: Dict[int, TAST]) -> List[TAST]:
+    l = deepcopy(l)
+    for i, v in s.items():
+        l[i] = v
+    return l
+
 
 def normalize_arrow(a1: TyArrow, a2: TyArrow) -> Optional[TyArrow]:
     if len(a1.parms) == len(a2.parms):
-        for a1arg, a2arg in zip(a1.parms, a2.parms):
-            a2 = cast(TyArrow, subst_types(a2arg, a1arg, a2)) # this is wrong
+        s = make_subst(a1.parms, a2.parms)
+        a2 = TyArrow(apply_subst(a2.parms, s))
         return a2
     return None
 
+
 def test_normalize_arrow():
+    pass
     assert normalize_arrow(_arrow("a -> b"), _arrow("c -> d")) == _arrow("a -> b")
-    assert normalize_arrow(_arrow("a -> b"), _arrow("b -> a")) == _arrow("a -> b") # oops
-    # i need real alpha conversion
+    assert normalize_arrow(_arrow("(a -> b) -> b"), _arrow("(b -> a) -> a")) == _arrow(
+        "(a -> b) -> b"
+    )
+    assert normalize_arrow(_arrow("a -> b"), _arrow("a -> a")) == _arrow("b -> b")
+
 
 def unify_types(t1: TAST, t2: TAST) -> bool:
     if type(t1) is TyConst and type(t2) is TyConst:
