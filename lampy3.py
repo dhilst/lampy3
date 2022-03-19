@@ -113,7 +113,8 @@ class AST:
 
 @dataclass
 class TyArrow(TAST):
-    parms: List[TAST]
+    t1: TAST
+    t2: TAST
     forall: Optional[List[str]] = None
 
 
@@ -282,7 +283,7 @@ class Transmformator(LarkTransformer):
         else:
             forall, t1, _, t2 = tree
 
-        return TyArrow([t1, t2], forall)
+        return TyArrow(t1, t2, forall)
 
     def tyconst(self, tree):
         return TyConst(tree[0].value)
@@ -447,7 +448,7 @@ def test_parse():
     assert parse("fun x : int -> int => x") == TFun(
         args=["x"],
         body=TVar(name="x"),
-        typ=TyArrow(parms=[TyConst(typ="int"), TyConst(typ="int")]),
+        typ=TyArrow(TyConst(typ="int"), TyConst(typ="int")),
     )
 
     assert parse("let x : int = 1 in x") == TLet(
@@ -461,7 +462,7 @@ def test_parse():
         name="foo",
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
-        typ=TyArrow(parms=[TyConst(typ="unit"), TyConst(typ="int")]),
+        typ=TyArrow(TyConst(typ="unit"), TyConst(typ="int")),
     )
 
     assert parse("if true then false else true : bool") == TIfElse(
@@ -477,10 +478,8 @@ def test_parse():
             "x",
             "y",
             TyArrow(
-                parms=[
-                    TyVar(var="a"),
-                    TyArrow(parms=[TyVar(var="b"), TyVar(var="a")], forall=None),
-                ],
+                TyVar(var="a"),
+                TyArrow(TyVar(var="b"), TyVar(var="a"), forall=None),
                 forall=["a", "b"],
             ),
         ],
@@ -492,10 +491,8 @@ def test_parse():
         args=["id"],
         body=TVar(name="id", typ=None),
         typ=TyArrow(
-            parms=[
-                TyArrow(parms=[TyVar(var="a"), TyVar(var="a")], forall=["a"]),
-                TyArrow(parms=[TyVar(var="b"), TyVar(var="b")], forall=["b"]),
-            ],
+            TyArrow(TyVar(var="a"), TyVar(var="a"), forall=["a"]),
+            TyArrow(TyVar(var="b"), TyVar(var="b"), forall=["b"]),
             forall=None,
         ),
     )
@@ -504,267 +501,6 @@ def test_parse():
 def error(*args, **kwargs) -> bool:
     print(*args, file=sys.stderr, **kwargs)
     return False
-
-
-# only for testing
-def _arrow(inp):
-    def tokenize(inp):
-        tokens = (x for x in inp.split())
-        for t in tokens:
-            lpar = t.split("(")
-            for x in lpar:
-                if x == "":
-                    yield "("
-                else:
-                    rpar = x.split(")")
-                    for y in rpar:
-                        if y == "":
-                            yield ")"
-                        else:
-                            yield y
-
-    def parse(tokens, acc=[]):
-        if not tokens:
-            return acc
-        la, *tokens = tokens
-        if la == "(":
-            return acc + parse(tokens, [])
-        elif la == ")":
-            return [acc] + parse(tokens, [])
-        else:
-            return parse(tokens, acc + [la])
-
-    def to_atom(ast):
-        if ast in ("bool", "int", "string"):
-            return TyConst(ast)
-        else:
-            return TyVar(ast)
-
-    def to_tyarrow(ast) -> TyArrow:
-        return TyArrow(
-            [to_atom(x) if type(x) is str else to_tyarrow(x) for x in ast if x != "->"]
-        )
-
-    tokens = tokenize(inp)
-    ast = parse(tokens)
-    return to_tyarrow(ast)
-
-
-def _arrow_unparse(ast: TAST):  # arbitrary nested list of strs
-    def from_atom(ast):
-        if type(ast) is TyConst:
-            return ast.typ
-        else:
-            return ast.var
-
-    if type(ast) is TyArrow:
-        return " -> ".join(
-            "({})".format(_arrow_unparse(arg))
-            if type(arg) is TyArrow
-            else from_atom(arg)
-            for arg in ast.parms
-        )
-
-
-def _arrow_pretty(string):
-    string = re.sub(r" \)", r")", string)
-    string = re.sub(r" $", "", string)
-    return string
-
-
-def test_parsearrow():
-    assert (
-        _arrow_pretty(_arrow_unparse(_arrow("a -> (b -> c) -> d")))
-        == "a -> (b -> c) -> d"
-    )
-    assert _arrow("a -> (b -> c) -> a") == TyArrow(
-        parms=[
-            TyVar(var="a"),
-            TyArrow(parms=[TyVar(var="b"), TyVar(var="c")]),
-            TyVar(var="a"),
-        ]
-    )
-    assert _arrow("int -> bool") == TyArrow(
-        parms=[TyConst(typ="int"), TyConst(typ="bool")]
-    )
-
-
-def make_subst(l1, l2) -> Dict[int, TAST]:
-    return {i: a for a, b in zip(l1, l2) for i, x in enumerate(l2) if x == b}
-
-
-def test_make_subst():
-    assert make_subst(_arrow("a -> b").parms, _arrow("b -> a").parms) == {
-        0: TyVar(var="a"),
-        1: TyVar(var="b"),
-    }
-
-
-def apply_subst(l: List[TAST], s: Dict[int, TAST]) -> List[TAST]:
-    l = deepcopy(l)
-    for i, v in s.items():
-        l[i] = v
-    return l
-
-
-def normalize_arrow(a1: TyArrow, a2: TyArrow) -> Optional[TyArrow]:
-    if len(a1.parms) == len(a2.parms):
-        s = make_subst(a1.parms, a2.parms)
-        a2 = TyArrow(apply_subst(a2.parms, s))
-        return a2
-    return None
-
-
-def test_normalize_arrow():
-    pass
-    assert normalize_arrow(_arrow("a -> b"), _arrow("c -> d")) == _arrow("a -> b")
-    assert normalize_arrow(_arrow("(a -> b) -> b"), _arrow("(b -> a) -> a")) == _arrow(
-        "(a -> b) -> b"
-    )
-    assert normalize_arrow(_arrow("a -> b"), _arrow("a -> a")) == _arrow("b -> b")
-
-
-def unify_types(t1: TAST, t2: TAST) -> bool:
-    if type(t1) is TyConst and type(t2) is TyConst:
-        return t1.typ == t2.typ  # type: ignore
-    elif type(t1) is TyVar and type(t2) is TyConst:
-        return True
-    elif type(t1) is TyConst and type(t2) is TyVar:
-        return True
-    elif type(t1) is TyVar and type(t2) is TyVar:
-        return t1.var == t2.var  # type: ignore
-    elif type(t1) is TyArrow and type(t2) is TyArrow:
-        # this is wrong because
-        # unify a -> a, b -> b is false
-        # and should be true
-        return len(t1.parms) == len(t2.parms) and all(  # type: ignore
-            unify_types(t1_, t2_) for t1_, t2_ in zip(t1.parms, t2.parms)  # type: ignore
-        )
-    else:
-        return False
-
-
-def test_unify_types():
-    assert unify_types(TyVar("a"), TyVar("a"))
-    assert unify_types(TyVar("a"), TyConst("int"))
-    assert unify_types(TyConst("int"), TyVar("a"))
-    assert unify_types(
-        TyArrow([TyVar("a"), TyVar("a")]), TyArrow([TyVar("a"), TyVar("a")])
-    )
-    assert unify_types(TyConst("int"), TyConst("int"))
-    assert unify_types(TyConst("int"), TyConst("bool")) == False
-    assert unify_types(TyArrow([TyVar("a"), TyVar("a")]), TyConst("int")) == False
-    assert unify_types(TyConst("int"), TyArrow([TyVar("a"), TyVar("a")])) == False
-
-
-@no_type_check
-def compile_typecheck(ast: AST, env: frozendict) -> Tuple[bool, frozendict]:
-    if type(ast) is TScript:
-        newenv = env
-        for expr in ast.exprs:
-            result, newenv = compile_typecheck(expr, newenv)
-            if result == False:
-                return False, env
-    elif type(ast) is TApply:
-        if type(ast.func) is TVar:
-            ftype = env.get(ast.func.name)
-            if ftype is None:
-                return error(f"Couldn't find type for function {ast.func.name}"), env
-        elif type(ast.func) is TFun:
-            ftype = ast.func.typ
-        else:
-            assert False, env
-
-        assert type(ftype) is TyArrow
-        parms, args = ftype.parms[:-1], ast.args
-        largs, lparms = len(args), len(parms)
-        if largs > lparms:
-            return error(f"To many arguments expected {lparms} found {largs}"), env
-        pairs = zip(parms, (arg.typ for arg in args))
-        for t1, t2 in pairs:
-            if t1 is None:
-                return error(f"Type anotation is None, can't type check in parameters")
-            elif t2 is None:
-                error(f"None in type of arguments {args}")
-                return error(f"Type anotation is None, can't type check in arguments")
-            if unify_types(t1, t2) == False:
-                return error(f"Expecting type {t1}, found {t2}"), env
-        return True, env
-    elif type(ast) is TDef:
-        return True, env.set(ast.name, ast.typ)
-    elif type(ast) is TFun:
-        if ast.typ is None:
-            return error(f"None type in anonymous function"), env
-        argtyp_dict = {k: v for k, v in zip(ast.args, ast.typ.parms[:-1])}  # type: ignore
-        return compile_typecheck(ast.body, env | argtyp_dict)
-    elif type(ast) is TIfElse:
-        if ast.cond.typ != TyConst("bool"):
-            return error(f"Expected bool expression on if condition {ast}"), env
-
-        if ast.then.typ != ast.else_.typ:
-            return (
-                error(
-                    f"'then' and 'else' types doesn't match in the if expression {ast}"
-                ),
-                env,
-            )
-        return True, env
-    elif type(ast) is TBin:
-        a, op, b = ast.values
-        if not compile_typecheck(a, env)[0]:
-            return False, env
-        elif not compile_typecheck(b, env)[0]:
-            return False, env
-        elif a.typ is None or b.typ is None:
-            return error("None type in binary expression"), env
-        elif a.typ != b.typ:
-            return error(f"Expected {a.typ} but found {b.typ}"), env
-        else:
-            ast.typ = a.typ
-            return True, env
-    elif type(ast) is TLet:
-        typ = ast.typ if ast.typ is not None else ast.e1.typ
-        return compile_typecheck(ast.e2, env | {ast.var: typ})
-    elif type(ast) in (TBool, TVar, TImport, TFromImport, TInteger):
-        return True, env
-
-    return error(f"Unexpected node {ast}"), env
-
-
-def test_typechecker():
-    assert (
-        compile_typecheck(parse('def id x : int -> int = x;; id "foo";'), frozendict())[
-            0
-        ]
-        == False
-    )
-    assert (
-        compile_typecheck(
-            parse('fun id : (int -> int) -> int => id "foo"'),
-            frozendict(),
-        )[0]
-        == False
-    )
-    assert (
-        compile_typecheck(
-            parse('fun id : (a -> a) -> a => id "foo"'),
-            frozendict(),
-        )[0]
-        == True
-    )
-    assert (
-        compile_typecheck(
-            parse(
-                """def test_id id : (a -> a) -> unit =
-                     id "foo";
-                     id 1;
-                     ();;
-                """
-            ),
-            frozendict(),
-        )[0]
-        == True
-    )
 
 
 def compile_py_expr(ast) -> str:
@@ -851,12 +587,8 @@ def compile(ast, i=0) -> str:
         return indent(i) + compile_py_expr(ast)
 
 
-def pcompile(inp, typecheck=True):
+def pcompile(inp):
     ast = parse(inp)
-    if typecheck:
-        welltyped, _ = compile_typecheck(ast, frozendict())
-        if not welltyped:
-            raise RuntimeError("Typecheck error")
     return compile(ast)
 
 
@@ -934,18 +666,18 @@ z
 """
     )
 
-    assert pcompile("f a b c", False) == "f(a, b, c)"
+    assert pcompile("f a b c") == "f(a, b, c)"
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
-    assert pcompile("foo ()", False) == "foo()"
+    assert pcompile("foo ()") == "foo()"
     assert (
         pcompile("def foo () = 1")
         == """def foo():
     return 1
 """
     )
-    assert pcompile("foo.bar ()", False) == "foo.bar()"
+    assert pcompile("foo.bar ()") == "foo.bar()"
 
-    assert pcompile("fun x => x", False) == "(lambda x: x)"
+    assert pcompile("fun x => x") == "(lambda x: x)"
 
 
 def main():
