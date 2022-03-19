@@ -26,7 +26,7 @@ grammar = r"""
     !tyvar : VAR_T
     !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
     tyarrow : forall? tyatom (ARROW tyexpr_1)+
-    forall : "forall"i CNAME+ "."i
+    forall : "forall"i CNAME+ ","i
 
     block : expr_1 | (expr_1 ";")+
 
@@ -115,7 +115,7 @@ class AST:
 class TyArrow(TAST):
     t1: TAST
     t2: TAST
-    forall: Optional[List[str]] = None
+    forall: Optional[Set[str]] = None
 
 
 @dataclass
@@ -408,6 +408,51 @@ def test_iter():
     is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
 
 
+def vars_in_helper(ast: TyArrow):
+    if type(ast.t1) is TyArrow:
+        yield from vars_in_helper(ast.t1)
+    if type(ast.t2) is TyArrow:
+        yield from vars_in_helper(ast.t2)
+    if type(ast.t1) is TyVar:
+        yield ast.t1.var
+    if type(ast.t2) is TyVar:
+        yield ast.t2.var
+
+
+def vars_in(ast: TyArrow) -> Set[str]:
+    return set(vars_in_helper(ast))
+
+
+def free_vars(ast: TyArrow) -> Set[str]:
+    if ast.forall is None:
+        return vars_in(ast)
+    bound_vars = set(ast.forall)
+    return {v for v in vars_in(ast) if v not in bound_vars}
+
+
+def forall_infer(ast: TyArrow) -> TyArrow:
+    if ast.forall is not None:
+        return ast
+
+    fv = free_vars(ast)
+    r = deepcopy(ast)
+    r.forall = fv
+    return r
+
+
+def test_forall_infer():
+    assert forall_infer(TyArrow(TyVar("a"), TyVar("b"))) == TyArrow(
+        t1=TyVar(var="a"), t2=TyVar(var="b"), forall={"a", "b"}
+    )
+    assert forall_infer(
+        TyArrow((TyArrow(TyVar("a"), TyVar("b"))), TyVar("b"))
+    ) == TyArrow(
+        t1=TyArrow(t1=TyVar(var="a"), t2=TyVar(var="b"), forall=None),
+        t2=TyVar(var="b"),
+        forall={"a", "b"},
+    )
+
+
 def test_parse():
     assert parse("true") == TBool(True)
     assert parse("false") == TBool(False)
@@ -473,7 +518,7 @@ def test_parse():
         TBool(True), TBool(False), TBool(True), TyConst(typ="bool")
     )
 
-    assert parse("fun x y : forall a b. a -> b -> a => x") == TFun(
+    assert parse("fun x y : forall a b, a -> b -> a => x") == TFun(
         args=[
             "x",
             "y",
@@ -487,7 +532,7 @@ def test_parse():
         typ=None,
     )
 
-    assert parse("fun id : (forall a. a -> a) -> (forall b. b -> b) => id") == TFun(
+    assert parse("fun id : (forall a, a -> a) -> (forall b, b -> b) => id") == TFun(
         args=["id"],
         body=TVar(name="id", typ=None),
         typ=TyArrow(
