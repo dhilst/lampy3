@@ -30,7 +30,7 @@ grammar = r"""
 
     block : expr_1 | (expr_1 ";")+
 
-    def_            : "def"i CNAME ((CNAME+) | UNIT) (":" tyarrow)? "=" block "end"i?
+    def_            : "def"i CNAME ((CNAME+) | UNIT) (COLON tyarrow)? "=" block "end"i?
     from_import     : "from"i qname "import"i qname+
     import_          : "import"i qname
 
@@ -47,6 +47,7 @@ grammar = r"""
     var : qname
     bool : BOOL
 
+    COLON : ":"
     UNIT : "()"
     VAR_T : /[a-z]/
     INT_T.30  : "int"
@@ -101,30 +102,25 @@ class Mixin:
 
 
 @Mixin.eq
-class TAST:
-    pass
-
-
-@Mixin.eq
 class AST:
     parent: Optional["AST"] = None
-    typ: Optional["TAST"] = None
+    typ: Optional["AST"] = None
 
 
 @dataclass
-class TyArrow(TAST):
-    t1: TAST
-    t2: TAST
+class TyArrow(AST):
+    t1: AST
+    t2: AST
     forall: Optional[Set[str]] = None
 
 
 @dataclass
-class TyConst(TAST):
+class TyConst(AST):
     typ: str
 
 
 @dataclass
-class TyVar(TAST):
+class TyVar(AST):
     var: str
 
 
@@ -132,7 +128,7 @@ class TyVar(TAST):
 class TApply(AST):
     func: AST
     args: List[AST]
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         self.func.parent = self
@@ -142,13 +138,13 @@ class TApply(AST):
 
 @dataclass
 class TUnit(AST):
-    typ: TAST = TyConst("unit")
+    typ: AST = TyConst("unit")
 
 
 @dataclass
 class TBool(AST):
     value: bool
-    typ: TAST = TyConst("bool")
+    typ: AST = TyConst("bool")
 
 
 @dataclass
@@ -156,7 +152,7 @@ class TLet(AST):
     var: str
     e1: AST
     e2: AST
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         self.e1.parent = self
@@ -166,19 +162,19 @@ class TLet(AST):
 @dataclass
 class TString(AST):
     value: str
-    typ: TAST = TyConst("string")
+    typ: AST = TyConst("string")
 
 
 @dataclass
 class TInteger(AST):
     value: int
-    typ: TAST = TyConst("int")
+    typ: AST = TyConst("int")
 
 
 @dataclass
 class TVar(AST):
     name: str
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
 
 @dataclass
@@ -195,7 +191,7 @@ class TImport(AST):
 @dataclass
 class TBlock(AST):
     exprs: List[AST]
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         for expr in self.exprs:
@@ -207,7 +203,7 @@ class TDef(AST):
     name: str
     args: Union[List[TUnit], List[str]]
     body: TBlock
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         self.body.parent = self
@@ -220,7 +216,7 @@ class TDef(AST):
 class TFun(AST):
     args: Union[List[TUnit], List[str]]
     body: AST
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         self.body.parent = self
@@ -231,7 +227,7 @@ class TIfElse(AST):
     cond: AST
     then: AST
     else_: AST
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         self.cond.parent = self
@@ -251,7 +247,7 @@ class TScript(AST):
 @dataclass
 class TBin(AST):
     values: List[AST]
-    typ: Optional[TAST] = None
+    typ: Optional[AST] = None
 
     def __post_init__(self):
         for v in self.values:
@@ -334,12 +330,21 @@ class Transmformator(LarkTransformer):
 
     def def_(self, tree):
         name, *args, body = tree
-        args = list(a.value if type(a) is Token else a for a in args)
-        if isinstance(args[-1], TAST):
-            typ = args.pop()
-            return TDef(name.value, args, body, typ)
+
+        def find(x, l):
+            try:
+                return l.index(x)
+            except ValueError:
+                return None
+
+        colon = find(Token("COLON", ":"), args)
+        if colon is not None:
+            args, typ = args[:colon], args[colon + 1]
         else:
-            return TDef(name.value, args, body)
+            typ = None
+        print("colon args", colon, args)
+        args = list(a.value if type(a) is Token else a for a in args)
+        return TDef(name.value, args, body, typ)
 
     def fun(self, tree):
         if len(tree) == 4:
@@ -406,6 +411,15 @@ def test_iter():
 
     is_ast("fun foo x => x")
     is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
+
+
+def transform(ast: AST, f: Callable[[AST], AST]) -> AST:
+    if type(ast) is TFun:
+        return f(
+            TFun(ast.args, f(ast.body), f(ast.typ) if ast.typ is not None else None)
+        )
+    else:
+        return ast
 
 
 def vars_in_helper(ast: TyArrow):
