@@ -11,6 +11,11 @@ from io import StringIO as S
 from functools import partial
 from frozendict import frozendict  # type: ignore
 
+A = TypeVar("A")
+B = TypeVar("B")
+C = TypeVar("C")
+D = TypeVar("D")
+
 grammar = r"""
     start : script
     ?script : stmt | (stmt ";")+
@@ -27,19 +32,25 @@ grammar = r"""
     !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
     tyarrow : forall? tyatom (ARROW tyexpr_1)+
     forall : "forall"i CNAME+ ","i
+    opt_tyarrow : (":" tyarrow)?
+    opt_tyatom : (":" tyatom)?
 
     block : expr_1 | (expr_1 ";")+
 
-    def_            : "def"i CNAME ((CNAME+) | UNIT) (COLON tyarrow)? "=" block "end"i?
-    from_import     : "from"i qname "import"i qname+
-    import_          : "import"i qname
 
-    fun             : "fun"i (CNAME+ | UNIT) (":" tyarrow)? FAT_ARROW expr_1
-    let             : "let"i CNAME (":" tyatom)? "=" expr_1 "in" expr_1
-    ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1 (":" tyatom)?
-    bin_expr : expr_1 (OP expr_1)+ (":" tyatom)?
-    ?appl : appl expr_3+ (":" tyatom)? | expr_3
+    from_import     : "from"i qname "import"i qname+
+    import_         : "import"i qname
+
+    def_            : "def"i CNAME parms opt_tyarrow  "=" block "end"i?
+    fun             : "fun"i parms opt_tyarrow "=>" expr_1
+
+    let             : "let"i CNAME opt_tyatom "=" expr_1 "in" expr_1
+    ifelse          : "if"i expr_1 "then"i expr_1 "else"i expr_1 opt_tyatom
+    bin_expr : expr_1 (OP expr_1)+ opt_tyatom
+    ?appl : appl expr_3+ opt_tyatom | expr_3
     ?atom : "(" expr_1 ")"
+
+    parms           : CNAME+ | UNIT
 
     ?const : bool | ESCAPED_STRING -> string | INT -> integer | UNIT
 
@@ -259,6 +270,14 @@ class TOp(AST):
     op: str
 
 
+def find(x, l):
+    "like l.index, but without exception"
+    try:
+        return l.index(x)
+    except ValueError:
+        return None
+
+
 class Transmformator(LarkTransformer):
     def __init__(self):
         self.statements = []
@@ -328,46 +347,36 @@ class Transmformator(LarkTransformer):
     def block(self, tree):
         return TBlock(tree)
 
+    def parms(self, tree):
+        return [t.value if type(t) is Token else t for t in tree]
+
+    def opt_tyatom(self, tree):
+        return tree[0] if len(tree) > 0 else None
+
+    def opt_tyarrow(self, tree):
+        return tree[0] if len(tree) > 0 else None
+
     def def_(self, tree):
-        name, *args, body = tree
-
-        def find(x, l):
-            try:
-                return l.index(x)
-            except ValueError:
-                return None
-
-        colon = find(Token("COLON", ":"), args)
-        if colon is not None:
-            args, typ = args[:colon], args[colon + 1]
-        else:
-            typ = None
-        print("colon args", colon, args)
-        args = list(a.value if type(a) is Token else a for a in args)
+        name, args, typ, body = tree
         return TDef(name.value, args, body, typ)
 
     def fun(self, tree):
-        if len(tree) == 4:
-            *args, typ, _, body = tree
-            args = list(a.value if type(a) is Token else a for a in args)
-            return TFun(args, body, typ)
-        else:
-            *args, _, body = tree
-            return TFun(args, body)
+        args, typ, body = tree
+        return TFun(args, body, typ)
 
     def ifelse(self, tree):
         return TIfElse(*tree)
 
     def appl(self, tree):
-        fname, *args = tree
-        return TApply(fname, args)
+        fname, *args, typ = tree
+        return TApply(fname, args, typ)
 
     def script(self, tree):
         return TScript(tree)
 
     def bin_expr(self, tree):
         values: List[AST] = []
-        for t in tree:
+        for t in tree[:-1]:  # exclude the type
             if type(t) is Token and t.type == "OP":
                 values.append(TOp(t.value))
             elif isinstance(t, AST):
@@ -375,7 +384,7 @@ class Transmformator(LarkTransformer):
             else:
                 raise TypeError(f"Unexpected type at {t}")
 
-        return TBin(values)
+        return TBin(values, tree[-1])
 
 
 def topdown_iter(x: AST) -> Iterable[AST]:
@@ -413,13 +422,68 @@ def test_iter():
     is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
 
 
-def transform(ast: AST, f: Callable[[AST], AST]) -> AST:
-    if type(ast) is TFun:
-        return f(
-            TFun(ast.args, f(ast.body), f(ast.typ) if ast.typ is not None else None)
-        )
+def fold(l: List[A], f: Callable[[A, B], B], acc: B) -> B:
+    if len(l) == 0:
+        return acc
+
+    a, *b = l
+    return fold(b, f, f(a, acc))
+
+
+def test_fold():
+    def sum(a, b):
+        return a + b
+
+    assert fold([1, 2, 3], sum, 0) == 6
+
+
+def ast_transform(ast: AST, f):
+    if type(ast) is TScript:
+        return f(TScript([f(e) for e in ast.exprs]))
+    elif type(ast) is TDef:
+        return f(TDef(ast.name, ast.args, f(ast.body)))
+    elif type(ast) is TBlock:
+        return f(TBlock([f(e) for e in ast.exprs]))
+    elif type(ast) is TBin:
+        return f(TBin([f(v) for v in ast.values]))
+    elif type(ast) is TFun:
+        return f(TFun(ast.args, f(ast.body), ast.typ))
     else:
+        return f(ast)
+
+
+def test_ast_fold():
+    ast = parse("fun x y => x + y")
+    assert ast == TFun(
+        args=["x", "y"],
+        body=TBin(
+            values=[TVar(name="x", typ=None), TOp(op="+"), TVar(name="y", typ=None)],
+            typ=None,
+        ),
+        typ=None,
+    )
+
+    def infer_type(ast):
+        if type(ast) is TBin:
+            return TBin(ast.values, TyConst("int"))
+        elif type(ast) is TFun:
+            return TFun(
+                ast.args,
+                ast.body,
+                TyArrow(TyConst("int"), TyArrow(TyConst("int"), ast.body.typ)),
+            )
+
         return ast
+
+    newast = ast_transform(ast, infer_type)
+    assert newast == TFun(
+        args=["x", "y"],
+        body=TBin(
+            values=[TVar(name="x", typ=None), TOp(op="+"), TVar(name="y", typ=None)],
+            typ=TyConst("int"),
+        ),
+        typ=TyArrow(TyConst("int"), TyArrow(TyConst("int"), TyConst("int"))),
+    )
 
 
 def vars_in_helper(ast: TyArrow):
@@ -533,17 +597,13 @@ def test_parse():
     )
 
     assert parse("fun x y : forall a b, a -> b -> a => x") == TFun(
-        args=[
-            "x",
-            "y",
-            TyArrow(
-                TyVar(var="a"),
-                TyArrow(TyVar(var="b"), TyVar(var="a"), forall=None),
-                forall=["a", "b"],
-            ),
-        ],
+        args=["x", "y"],
         body=TVar(name="x", typ=None),
-        typ=None,
+        typ=TyArrow(
+            TyVar(var="a"),
+            TyArrow(TyVar(var="b"), TyVar(var="a"), forall=None),
+            forall=["a", "b"],
+        ),
     )
 
     assert parse("fun id : (forall a, a -> a) -> (forall b, b -> b) => id") == TFun(
