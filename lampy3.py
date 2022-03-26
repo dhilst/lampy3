@@ -297,6 +297,7 @@ class Transmformator(LarkTransformer):
             forall = None
         else:
             forall, t1, _, t2 = tree
+            forall = set(forall)
 
         return TyArrow(t1, t2, forall)
 
@@ -437,22 +438,37 @@ def test_fold():
     assert fold([1, 2, 3], sum, 0) == 6
 
 
-def ast_transform(ast: AST, f):
+def ast_transform(ast: AST, f: Callable[[AST], AST]):
     if type(ast) is TScript:
         return f(TScript([f(e) for e in ast.exprs]))
     elif type(ast) is TDef:
-        return f(TDef(ast.name, ast.args, f(ast.body)))
+        return f(
+            TDef(
+                ast.name,
+                ast.args,
+                cast(TBlock, f(ast.body)),
+                f(ast.typ) if ast.typ is not None else None,
+            )
+        )
     elif type(ast) is TBlock:
         return f(TBlock([f(e) for e in ast.exprs]))
     elif type(ast) is TBin:
         return f(TBin([f(v) for v in ast.values]))
     elif type(ast) is TFun:
-        return f(TFun(ast.args, f(ast.body), ast.typ))
+        return f(
+            TFun(ast.args, f(ast.body), f(ast.typ) if ast.typ is not None else None)
+        )
     else:
         return f(ast)
 
 
-def test_ast_fold():
+def forall_infer_transform(ast: AST) -> AST:
+    if type(ast) is TyArrow:
+        return forall_infer(ast)
+    return ast
+
+
+def test_ast_transform():
     ast = parse("fun x y => x + y")
     assert ast == TFun(
         args=["x", "y"],
@@ -482,7 +498,44 @@ def test_ast_fold():
             values=[TVar(name="x", typ=None), TOp(op="+"), TVar(name="y", typ=None)],
             typ=TyConst("int"),
         ),
-        typ=TyArrow(TyConst("int"), TyArrow(TyConst("int"), TyConst("int"))),
+        typ=TyArrow(
+            TyConst("int"),
+            TyArrow(t1=TyConst(typ="int"), t2=TyConst(typ="int"), forall=None),
+        ),
+    )
+
+    assert ast_transform(
+        parse("fun x y : a -> b -> c -> unit => fun z => ()"),
+        forall_infer_transform,
+    ) == TFun(
+        args=["x", "y"],
+        body=TFun(args=["z"], body=TUnit(typ=TyConst(typ="unit")), typ=None),
+        typ=TyArrow(
+            t1=TyVar(var="a"),
+            t2=TyArrow(
+                t1=TyVar(var="b"),
+                t2=TyArrow(t1=TyVar(var="c"), t2=TyConst(typ="unit"), forall=None),
+                forall=None,
+            ),
+            forall={"a", "c", "b"},
+        ),
+    )
+
+    assert ast_transform(
+        parse("fun x y : a -> b -> (forall c, c -> unit) => ()"),
+        forall_infer_transform,
+    ) == TFun(
+        args=["x", "y"],
+        body=TUnit(typ=TyConst(typ="unit")),
+        typ=TyArrow(
+            t1=TyVar(var="a"),
+            t2=TyArrow(
+                t1=TyVar(var="b"),
+                t2=TyArrow(t1=TyVar(var="c"), t2=TyConst(typ="unit"), forall={"c"}),
+                forall=None,
+            ),
+            forall={"c", "a", "b"},
+        ),
     )
 
 
@@ -602,7 +655,7 @@ def test_parse():
         typ=TyArrow(
             TyVar(var="a"),
             TyArrow(TyVar(var="b"), TyVar(var="a"), forall=None),
-            forall=["a", "b"],
+            forall={"a", "b"},
         ),
     )
 
@@ -610,8 +663,8 @@ def test_parse():
         args=["id"],
         body=TVar(name="id", typ=None),
         typ=TyArrow(
-            TyArrow(TyVar(var="a"), TyVar(var="a"), forall=["a"]),
-            TyArrow(TyVar(var="b"), TyVar(var="b"), forall=["b"]),
+            TyArrow(TyVar(var="a"), TyVar(var="a"), forall={"a"}),
+            TyArrow(TyVar(var="b"), TyVar(var="b"), forall={"b"}),
             forall=None,
         ),
     )
