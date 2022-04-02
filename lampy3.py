@@ -582,6 +582,13 @@ def compile_py_expr(ast) -> str:
         return f"{ast.name}"
     elif type(ast) is TApply:
         fname = compile_py_expr(ast.func)
+        if fname == "assert":  # treat assert specially
+            if len(ast.args) == 1:
+                return "assert {}".format(compile_py_expr(ast.args[0]))
+            elif len(ast.args) == 2:
+                return "assert {}, {}".format(
+                    compile_py_expr(ast.args[0]), compile_py_expr(ast.args[1])
+                )
 
         if len(ast.args) == 1 and type(ast.args[0]) is TUnit:
             return f"{fname}()"
@@ -607,6 +614,8 @@ def compile_py_expr(ast) -> str:
             return f"(lambda: {body})"
         else:
             return "(lambda {}: {})".format(", ".join(ast.args), body)  # type: ignore
+    elif type(ast) is TUnit:
+        return "None"
 
     raise RuntimeError(f"Compile error, {ast} not known")
 
@@ -657,6 +666,9 @@ def compile(ast, i=0) -> str:
 
 def pcompile(inp):
     ast = parse(inp)
+    result = typecheck(ast)
+    if type(result) is str:
+        raise TypeError(f"Typecheck error {result}")
     return compile(ast)
 
 
@@ -691,6 +703,16 @@ def prun(inp):
         o.write(out)
         o.flush()
         cmdline = [sys.executable, o.name]
+        run(cmdline)
+
+
+def ptest(inp):
+    with NamedTemporaryFile("w", delete=False, suffix=".py") as o:
+        with open(inp, "r") as i:
+            out = compile_opened_file(i)
+        o.write(out)
+        o.flush()
+        cmdline = ["pytest", o.name]
         run(cmdline)
 
 
@@ -801,7 +823,6 @@ def unify_arrows(t1: TyArrow, t2: TyArrow) -> bool:
     return numerical_from_arrow(t1) == numerical_from_arrow(t2)
 
 
-@trace_f
 def unify_types(t1: AST, t2: AST) -> Dict[str, AST] | Error:
     if type(t1) is TyVar and type(t2) is TyConst:
         return {t1.var: t2}
@@ -845,7 +866,6 @@ def set_types(asts: Iterable[AST], env: TypeEnv) -> None:
         set_type(arg, env)
 
 
-@trace_f
 def typecheck(ast: AST, env: TypeEnv = {}) -> TypeEnv | Error:
     if type(ast) is TScript:
         for expr in ast.exprs:
@@ -905,7 +925,7 @@ def typecheck(ast: AST, env: TypeEnv = {}) -> TypeEnv | Error:
         if len(results) > 1 or len(results) == 0:
             return Error(f"All operands on binary expressions must have the same type")
 
-    return Error("End of typecheck function, dunno what to do")
+    return Error(f"End of typecheck function, dunno what to do for node {ast}")
 
 
 def test_typecheck():
@@ -925,7 +945,9 @@ def test_typecheck():
 
 def main():
     argparser = ArgumentParser("Lampy 3")
-    argparser.add_argument("command", metavar="CMD", type=str, help="One of [compile]")
+    argparser.add_argument(
+        "command", metavar="CMD", type=str, help="One of [compile, run, test]"
+    )
     argparser.add_argument("--input")
     argparser.add_argument("--output", default="-")
 
@@ -935,6 +957,8 @@ def main():
         compile_file(args.input, args.output)
     elif args.command == "run":
         prun(args.input)
+    elif args.command == "test":
+        ptest(args.input)
 
 
 if __name__ == "__main__":

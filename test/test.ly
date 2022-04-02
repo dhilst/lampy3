@@ -1,17 +1,9 @@
-fun not_ x =
-    if x
-    then false
-    else true
-end
-
-
-print (not_ false)
-
-
-fun fact x =
+def fact x : forall, int -> int =
     if x == 0
     then 1
-    else x * fact (x - 1)
-end
+    else x * fact (x - 1);;
 
-print (fact 5)
+
+def test () : forall, unit -> unit =
+    assert (fact 5) == 120;
+    ();;
