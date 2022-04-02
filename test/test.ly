@@ -5,5 +5,5 @@ def fact x : forall, int -> int =
 
 
 def test () : forall, unit -> unit =
-    assert (fact 5) == 120;
+    assert (fact 5 == 120);
     ();;

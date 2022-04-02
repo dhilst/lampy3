@@ -800,14 +800,17 @@ def numerical_from_arrow(arrow: TyArrow):
     return "/" * len(forall) + "".join(idxs)
 
 
-def test_numerical_from_arrow():
-    def _arrow(inp):
-        return parse(f"fun x : {inp} => x").typ
+def arrow(inp):
+    "Returns a TyArrow instance for input string"
+    return parse(f"fun x : {inp} => x").typ
 
-    assert numerical_from_arrow(_arrow("forall a b, a -> b -> a")) == "//010"
-    assert numerical_from_arrow(_arrow("forall b a, a -> b -> a")) == "//101"
-    assert numerical_from_arrow(_arrow("forall b a, b -> a -> b")) == "//010"
-    assert numerical_from_arrow(_arrow("forall c d, c -> d -> c")) == "//010"
+
+def test_numerical_from_arrow():
+
+    assert numerical_from_arrow(arrow("forall a b, a -> b -> a")) == "//010"
+    assert numerical_from_arrow(arrow("forall b a, a -> b -> a")) == "//101"
+    assert numerical_from_arrow(arrow("forall b a, b -> a -> b")) == "//010"
+    assert numerical_from_arrow(arrow("forall c d, c -> d -> c")) == "//010"
 
 
 def trace_f(f):
@@ -849,14 +852,45 @@ def unify_types(t1: AST, t2: AST) -> Dict[str, AST] | Error:
     return Error(f"Unknown unification {t1} {t2}")
 
 
+global_env = {"assert": arrow("forall, bool -> unit")}
+
+
 def set_type(ast: AST, env: TypeEnv) -> None:
+    if ast.typ is not None:
+        return
+
     if type(ast) is TVar:
         if ast.typ is not None:
             return
-        typ = env.get(ast.name)
+        typ = env.get(ast.name) or global_env.get(ast.name)
         if typ is None:
             raise TypeError(f"Unknow type for variable {ast.name}")
         ast.typ = typ
+        return
+    elif type(ast) is TBlock:
+        set_types(ast.exprs, env)
+        ast.typ = ast.exprs[-1].typ
+        return
+    elif type(ast) is TIfElse:
+        set_types([ast.cond, ast.then, ast.else_], env)
+        ast.typ = ast.then.typ
+        return
+    elif type(ast) is TBin:
+        assert type(ast.values[1]) is TOp
+        set_types([x for x in ast.values if type(x) is not TOp], env)
+        op = ast.values[1].op
+        if op in ("==", "<=", ">=", "<", ">", "=!"):
+            ast.typ = TyConst("bool")
+        else:
+            ast.typ = ast.values[0].typ
+        return
+    elif type(ast) is TApply:
+        set_type(ast.func, env)
+        set_types(ast.args, env)
+        assert (
+            type(ast.func.typ) is TyArrow
+        ), f"{ast.func.typ} is not TyArrow, at {ast}, env = {env}"
+        ast.typ = ast.func.typ.args[-1]
         return
     raise TypeError(f"Don't know to to set type of {ast}")
 
@@ -921,9 +955,36 @@ def typecheck(ast: AST, env: TypeEnv = {}) -> TypeEnv | Error:
             return Error(f"'if' condition need to have boolean type at {ast}")
         return env
     elif type(ast) is TBin:
-        results = set(x.typ for x in ast.values if type(x) is not TOp)
-        if len(results) > 1 or len(results) == 0:
-            return Error(f"All operands on binary expressions must have the same type")
+        vs = [v for v in ast.values if type(v) is not TOp]
+        set_types(vs, env)
+        assert ast.values[0] is not None and ast.values[0].typ is not None
+        typ = ast.values[0].typ
+        assert all(v is not None and v.typ is not None for v in vs)
+        if not all(v.typ == typ for v in vs):  # type: ignore
+            return Error(
+                f"All operands of a binary expression must have the same type, expected {typ}, found {vs}"
+            )
+        return env
+    elif type(ast) is TBlock:
+        set_type(ast, env)
+        for expr in ast.exprs:
+            result = typecheck(expr, env)
+            if type(result) is str:  # error
+                return result
+        assert (
+            type(ast.parent) in (TDef, TFun)
+            and ast.exprs[-1].typ is not None
+            and ast.parent is not None
+            and ast.parent.typ is not None
+            and type(ast.parent.typ) is TyArrow
+        )
+        if ast.exprs[-1].typ != ast.parent.typ.args[-1]:
+            return Error(
+                f"Expected type {ast.parent.typ.args[-1]} found {ast.exprs[-1].typ} at {ast}"
+            )
+        return env
+    elif type(ast) in (TInteger, TString, TBool, TUnit):
+        return env
 
     return Error(f"End of typecheck function, dunno what to do for node {ast}")
 
