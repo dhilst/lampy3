@@ -30,8 +30,9 @@ grammar = r"""
     ?tyatom : tyconst | tyvar | "(" tyexpr_1 ")"
     !tyvar : VAR_T
     !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
-    tyarrow : forall? tyatom (ARROW tyexpr_1)+
-    forall : "forall"i CNAME+ ","i
+    tyarrow_2 : tyatom (ARROW tyexpr_1)+
+    tyarrow : forall tyarrow_2+
+    forall : "forall"i CNAME* ","i
     opt_tyarrow : (":" tyarrow)
     opt_tyatom : (":" tyatom)
 
@@ -120,14 +121,14 @@ class AST:
 
 @dataclass
 class TyArrow(AST):
-    t1: AST
-    t2: AST
-    forall: Optional[Set[str]] = None
+    args: List[AST]
+    forall: Set[str]
 
 
 @dataclass
 class TyConst(AST):
-    typ: str
+    typ: str  # type: ignore
+    # @TODO make a base class for typed nodes
 
 
 @dataclass
@@ -289,17 +290,16 @@ class Transmformator(LarkTransformer):
         return TyVar(tree[0].value)
 
     def forall(self, tree):
-        return [t.value for t in tree]
+        return {t.value for t in tree}
+
+    def tyarrow_2(self, tree):
+        print("tyarrow_2", tree)
+        return [v for v in tree if v != Token("ARROW", "->")]
 
     def tyarrow(self, tree):
-        if len(tree) == 3:
-            t1, _, t2 = tree
-            forall = None
-        else:
-            forall, t1, _, t2 = tree
-            forall = set(forall)
-
-        return TyArrow(t1, t2, forall)
+        print(tree)
+        forall, args = tree
+        return TyArrow(args, forall)
 
     def tyconst(self, tree):
         return TyConst(tree[0].value)
@@ -419,8 +419,8 @@ def test_iter():
         assert all(isinstance(x, AST) for x in topdown_iter(parse(code)))
         assert all(isinstance(x, AST) for x in bottomup_iter(parse(code)))
 
-    is_ast("fun foo x : a -> a => x")
-    is_ast("def foo x : int -> int = if x == 0 then 0 else 1")
+    is_ast("fun foo x : forall a, a -> a => x")
+    is_ast("def foo x : forall, int -> int = if x == 0 then 0 else 1")
 
 
 def ast_transform(ast: AST, f: Callable[[AST], AST]):
@@ -447,61 +447,6 @@ def ast_transform(ast: AST, f: Callable[[AST], AST]):
         return f(ast)
 
 
-def forall_infer_transform(ast: AST) -> AST:
-    if type(ast) is TyArrow:
-        return forall_infer(ast)
-    return ast
-
-
-def test_ast_transform():
-    pass
-
-
-def vars_in_helper(ast: TyArrow):
-    if type(ast.t1) is TyArrow:
-        yield from vars_in_helper(ast.t1)
-    if type(ast.t2) is TyArrow:
-        yield from vars_in_helper(ast.t2)
-    if type(ast.t1) is TyVar:
-        yield ast.t1.var
-    if type(ast.t2) is TyVar:
-        yield ast.t2.var
-
-
-def vars_in(ast: TyArrow) -> Set[str]:
-    return set(vars_in_helper(ast))
-
-
-def free_vars(ast: TyArrow) -> Set[str]:
-    if ast.forall is None:
-        return vars_in(ast)
-    bound_vars = set(ast.forall)
-    return {v for v in vars_in(ast) if v not in bound_vars}
-
-
-def forall_infer(ast: TyArrow) -> TyArrow:
-    if ast.forall is not None:
-        return ast
-
-    fv = free_vars(ast)
-    r = deepcopy(ast)
-    r.forall = fv
-    return r
-
-
-def test_forall_infer():
-    assert forall_infer(TyArrow(TyVar("a"), TyVar("b"))) == TyArrow(
-        t1=TyVar(var="a"), t2=TyVar(var="b"), forall={"a", "b"}
-    )
-    assert forall_infer(
-        TyArrow((TyArrow(TyVar("a"), TyVar("b"))), TyVar("b"))
-    ) == TyArrow(
-        t1=TyArrow(t1=TyVar(var="a"), t2=TyVar(var="b"), forall=None),
-        t2=TyVar(var="b"),
-        forall={"a", "b"},
-    )
-
-
 def test_parse():
     assert parse("true") == TBool(True)
     assert parse("false") == TBool(False)
@@ -515,20 +460,18 @@ def test_parse():
         "foo", "bar tar zar".split()
     )
 
-    assert parse("def id x : a -> a = x end") == TDef(
+    assert parse("def id x : forall a, a -> a = x end") == TDef(
         name="id",
         args=["x"],
         body=TBlock(exprs=[TVar(name="x", typ=None)], typ=None),
-        typ=TyArrow(t1=TyVar(var="a"), t2=TyVar(var="a"), forall=None),
+        typ=TyArrow([TyVar(var="a"), TyVar(var="a")], forall={"a"}),
     )
-    assert parse("def const a b : a -> b -> a = a end") == TDef(
+    assert parse("def const a b : forall a b, a -> b -> a = a end") == TDef(
         name="const",
         args=["a", "b"],
         body=TBlock(exprs=[TVar(name="a", typ=None)], typ=None),
         typ=TyArrow(
-            t1=TyVar(var="a"),
-            t2=TyArrow(t1=TyVar(var="b"), t2=TyVar(var="a"), forall=None),
-            forall=None,
+            args=[TyVar(var="a"), TyVar(var="b"), TyVar(var="a")], forall={"a", "b"}
         ),
     )
 
@@ -547,24 +490,24 @@ def test_parse():
 
     assert parse("foo ()") == TApply(func=TVar(name="foo"), args=[TUnit()])
 
-    assert parse("def foo () : unit -> int = 1") == TDef(
+    assert parse("def foo () : forall, unit -> int = 1") == TDef(
         name="foo",
         args=[TUnit(typ=TyConst(typ="unit"))],
         body=TBlock(exprs=[TInteger(value=1, typ=TyConst(typ="int"))], typ=None),
-        typ=TyArrow(t1=TyConst(typ="unit"), t2=TyConst(typ="int"), forall=None),
+        typ=TyArrow(args=[TyConst(typ="unit"), TyConst(typ="int")], forall=set()),
     )
     assert parse("foo.bar ()") == TApply(func=TVar(name="foo.bar"), args=[TUnit()])
-    assert parse("fun x : int -> int => x") == TFun(
+    assert parse("fun x : forall, int -> int => x") == TFun(
         args=["x"],
         body=TVar(name="x", typ=None),
-        typ=TyArrow(t1=TyConst(typ="int"), t2=TyConst(typ="int"), forall=None),
+        typ=TyArrow(args=[TyConst(typ="int"), TyConst(typ="int")], forall=set()),
     )
 
     # type declarations
-    assert parse("fun x : int -> int => x") == TFun(
+    assert parse("fun x : forall, int -> int => x") == TFun(
         args=["x"],
         body=TVar(name="x"),
-        typ=TyArrow(TyConst(typ="int"), TyConst(typ="int")),
+        typ=TyArrow([TyConst(typ="int"), TyConst(typ="int")], set()),
     )
 
     assert parse("let x : int = 1 in x") == TLet(
@@ -574,11 +517,11 @@ def test_parse():
         typ=TyConst(typ="int"),
     )
 
-    assert parse("def foo () : unit -> int = 1") == TDef(
+    assert parse("def foo () : forall, unit -> int = 1") == TDef(
         name="foo",
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
-        typ=TyArrow(TyConst(typ="unit"), TyConst(typ="int")),
+        typ=TyArrow([TyConst(typ="unit"), TyConst(typ="int")], forall=set()),
     )
 
     assert parse("if true then false else true") == TIfElse(
@@ -593,19 +536,22 @@ def test_parse():
         args=["x", "y"],
         body=TVar(name="x", typ=None),
         typ=TyArrow(
-            TyVar(var="a"),
-            TyArrow(TyVar(var="b"), TyVar(var="a"), forall=None),
+            [TyVar(var="a"), TyVar(var="b"), TyVar(var="a")],
             forall={"a", "b"},
         ),
     )
 
-    assert parse("fun id : (forall a, a -> a) -> (forall b, b -> b) => id") == TFun(
+    assert parse(
+        "fun id : forall, (forall a, a -> a) -> (forall b, b -> b) => id"
+    ) == TFun(
         args=["id"],
         body=TVar(name="id", typ=None),
         typ=TyArrow(
-            TyArrow(TyVar(var="a"), TyVar(var="a"), forall={"a"}),
-            TyArrow(TyVar(var="b"), TyVar(var="b"), forall={"b"}),
-            forall=None,
+            args=[
+                TyArrow(args=[TyVar(var="a"), TyVar(var="a")], forall={"a"}),
+                TyArrow(args=[TyVar(var="b"), TyVar(var="b")], forall={"b"}),
+            ],
+            forall=set(),
         ),
     )
 
@@ -760,7 +706,7 @@ x
     assert pcompile("from foo import bar tar zar") == "from foo import bar,tar,zar\n"
 
     assert (
-        pcompile("def id x : a -> a  = x")
+        pcompile("def id x : forall a, a -> a  = x")
         == """\
 def id(x):
     return x
@@ -768,7 +714,7 @@ def id(x):
     )
 
     assert (
-        pcompile("def foo x : a -> bool = let y : bool = true in y")
+        pcompile("def foo x : forall a, a -> bool = let y : bool = true in y")
         == """\
 def foo(x):
     return (lambda y : y)(True)
@@ -791,14 +737,14 @@ z
     assert pcompile("100 * 100 + 100") == "100 * 100 + 100"
     assert pcompile("foo ()") == "foo()"
     assert (
-        pcompile("def foo () : unit -> int = 1")
+        pcompile("def foo () : forall, unit -> int = 1")
         == """def foo():
     return 1
 """
     )
     assert pcompile("foo.bar ()") == "foo.bar()"
 
-    assert pcompile("fun x : a -> a => x") == "(lambda x: x)"
+    assert pcompile("fun x : forall a, a -> a => x") == "(lambda x: x)"
 
 
 def main():
