@@ -7,6 +7,7 @@ from subprocess import run
 from typing import *
 from dataclasses import dataclass, fields, is_dataclass
 from lark import Lark, Transformer as LarkTransformer, Token, Discard
+from lark.exceptions import ParseError
 from io import StringIO as S
 from functools import partial
 from frozendict import frozendict  # type: ignore
@@ -20,14 +21,14 @@ grammar = r"""
     start : script
     ?script : stmt | (stmt ";")+
 
-    ?stmt : def_ | import_ | from_import | expr_1
+    ?stmt : def_ | import_ | from_import | type_ | expr_1
     ?expr_1 : let | ifelse | bin_expr | fun | expr_2
     ?expr_2 : appl
     ?expr_3 :  var | const | atom
 
-    type_ : "type"i CNAME "="i tyexpr_1
+    type_ : "type"i qname "="i tyexpr_1
     ?tyexpr_1 : tyatom | tyarrow
-    ?tyatom : tyconst | tyvar | "(" tyexpr_1 ")"
+    ?tyatom : tyconst | tyvar | qname | "(" tyexpr_1 ")"
     !tyvar : VAR_T
     !tyconst : INT_T | BOOL_T | STRING_T | UNIT_T
     tyarrow_2 : tyatom (ARROW tyexpr_1)+
@@ -235,6 +236,12 @@ class TFun(AST):
 
 
 @dataclass
+class TTyDecl(AST):
+    name: str
+    val: AST
+
+
+@dataclass
 class TIfElse(AST):
     cond: AST
     then: AST
@@ -365,6 +372,10 @@ class Transmformator(LarkTransformer):
     def fun(self, tree):
         args, typ, body = tree
         return TFun(args, body, typ)
+
+    def type_(self, tree):
+        name, val = tree
+        return TTyDecl(name, val)
 
     def ifelse(self, tree):
         return TIfElse(*tree)
@@ -660,12 +671,22 @@ def compile(ast, i=0) -> str:
         exprs = [compile(e) for e in ast.exprs]
         exprs_str = "\n".join(exprs)
         return exprs_str
+    elif type(ast) is TTyDecl:
+        return ""
     else:
         return indent(i) + compile_py_expr(ast)
 
 
 def pcompile(inp):
-    ast = parse(inp)
+    try:
+        ast = parse(inp)
+    except ParseError as e:
+        err = inp.split("\n")[e.line - 1] + "\n" + (" " * (e.column - 1)) + "^"
+        error("Parse error at")
+        error(err)
+        error(e)
+        return
+
     result = typecheck(ast)
     if type(result) is str:
         raise TypeError(f"Typecheck error {result}")
@@ -983,7 +1004,10 @@ def typecheck(ast: AST, env: TypeEnv = {}) -> TypeEnv | Error:
                 f"Expected type {ast.parent.typ.args[-1]} found {ast.exprs[-1].typ} at {ast}"
             )
         return env
-    elif type(ast) in (TInteger, TString, TBool, TUnit):
+    elif type(ast) is TTyDecl:
+        env[ast.name] = ast.val
+        return env
+    elif type(ast) in (TInteger, TString, TBool, TUnit, TImport, TFromImport, TVar):
         return env
 
     return Error(f"End of typecheck function, dunno what to do for node {ast}")
