@@ -681,8 +681,13 @@ def pcompile(inp):
     try:
         ast = parse(inp)
     except ParseError as e:
-        err = inp.split("\n")[e.line - 1] + "\n" + (" " * (e.column - 1)) + "^"
-        error("Parse error at")
+        err = (
+            inp.split("\n")[e.line - 1]
+            + "\n"
+            + (" " * (e.column - 1))
+            + "\u001b[0;31m^\u001b[0m"
+        )
+        error("Parse error at line {}".format(e.line))
         error(err)
         error(e)
         return
