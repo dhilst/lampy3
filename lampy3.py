@@ -215,7 +215,7 @@ class TDef(AST):
     name: str
     args: Union[List[TUnit], List[str]]
     body: TBlock
-    typ: Optional[AST] = None
+    typ: AST
 
     def __post_init__(self):
         self.body.parent = self
@@ -290,14 +290,15 @@ class Transmformator(LarkTransformer):
         return TyVar(tree[0].value)
 
     def forall(self, tree):
-        return {t.value for t in tree}
+        args = [t.value for t in tree]
+        if len(set(args)) < len(args):
+            raise RuntimeError(f"Duplicate type arguments in forall at {tree}")
+        return args
 
     def tyarrow_2(self, tree):
-        print("tyarrow_2", tree)
         return [v for v in tree if v != Token("ARROW", "->")]
 
     def tyarrow(self, tree):
-        print(tree)
         forall, args = tree
         return TyArrow(args, forall)
 
@@ -464,14 +465,14 @@ def test_parse():
         name="id",
         args=["x"],
         body=TBlock(exprs=[TVar(name="x", typ=None)], typ=None),
-        typ=TyArrow([TyVar(var="a"), TyVar(var="a")], forall={"a"}),
+        typ=TyArrow([TyVar(var="a"), TyVar(var="a")], forall=["a"]),
     )
     assert parse("def const a b : forall a b, a -> b -> a = a end") == TDef(
         name="const",
         args=["a", "b"],
         body=TBlock(exprs=[TVar(name="a", typ=None)], typ=None),
         typ=TyArrow(
-            args=[TyVar(var="a"), TyVar(var="b"), TyVar(var="a")], forall={"a", "b"}
+            args=[TyVar(var="a"), TyVar(var="b"), TyVar(var="a")], forall=["a", "b"]
         ),
     )
 
@@ -494,20 +495,20 @@ def test_parse():
         name="foo",
         args=[TUnit(typ=TyConst(typ="unit"))],
         body=TBlock(exprs=[TInteger(value=1, typ=TyConst(typ="int"))], typ=None),
-        typ=TyArrow(args=[TyConst(typ="unit"), TyConst(typ="int")], forall=set()),
+        typ=TyArrow(args=[TyConst(typ="unit"), TyConst(typ="int")], forall=[]),
     )
     assert parse("foo.bar ()") == TApply(func=TVar(name="foo.bar"), args=[TUnit()])
     assert parse("fun x : forall, int -> int => x") == TFun(
         args=["x"],
         body=TVar(name="x", typ=None),
-        typ=TyArrow(args=[TyConst(typ="int"), TyConst(typ="int")], forall=set()),
+        typ=TyArrow(args=[TyConst(typ="int"), TyConst(typ="int")], forall=[]),
     )
 
     # type declarations
     assert parse("fun x : forall, int -> int => x") == TFun(
         args=["x"],
         body=TVar(name="x"),
-        typ=TyArrow([TyConst(typ="int"), TyConst(typ="int")], set()),
+        typ=TyArrow([TyConst(typ="int"), TyConst(typ="int")], []),
     )
 
     assert parse("let x : int = 1 in x") == TLet(
@@ -521,7 +522,7 @@ def test_parse():
         name="foo",
         args=[TUnit()],
         body=TBlock(exprs=[TInteger(value=1)]),
-        typ=TyArrow([TyConst(typ="unit"), TyConst(typ="int")], forall=set()),
+        typ=TyArrow([TyConst(typ="unit"), TyConst(typ="int")], forall=[]),
     )
 
     assert parse("if true then false else true") == TIfElse(
@@ -537,7 +538,7 @@ def test_parse():
         body=TVar(name="x", typ=None),
         typ=TyArrow(
             [TyVar(var="a"), TyVar(var="b"), TyVar(var="a")],
-            forall={"a", "b"},
+            forall=["a", "b"],
         ),
     )
 
@@ -548,10 +549,10 @@ def test_parse():
         body=TVar(name="id", typ=None),
         typ=TyArrow(
             args=[
-                TyArrow(args=[TyVar(var="a"), TyVar(var="a")], forall={"a"}),
-                TyArrow(args=[TyVar(var="b"), TyVar(var="b")], forall={"b"}),
+                TyArrow(args=[TyVar(var="a"), TyVar(var="a")], forall=["a"]),
+                TyArrow(args=[TyVar(var="b"), TyVar(var="b")], forall=["b"]),
             ],
-            forall=set(),
+            forall=[],
         ),
     )
 
@@ -745,6 +746,181 @@ z
     assert pcompile("foo.bar ()") == "foo.bar()"
 
     assert pcompile("fun x : forall a, a -> a => x") == "(lambda x: x)"
+
+
+Error = NewType("Error", str)
+
+TypeEnv = Dict[str, AST]
+
+
+# this is not strictly rigth, but is good enough for now
+def numerical_from_arrow(arrow: TyArrow):
+    """
+    Returns a "numeric" value for this function. This is
+    used to compare two arrows, examepls:
+
+
+    forall a b, a -> b -> a => //010
+
+    Note that the order in forall matters
+
+    forall b a, a -> b -> a => //101
+    """
+    forall = list(arrow.forall)
+    idxs = []
+    for x in arrow.args:
+        if type(x) is TyVar:
+            try:
+                idxs.append(str(forall.index(x.var)))
+            except IndexError:
+                raise TypeError(f"Unbound variable {x.var} in arrow")
+
+    return "/" * len(forall) + "".join(idxs)
+
+
+def test_numerical_from_arrow():
+    def _arrow(inp):
+        return parse(f"fun x : {inp} => x").typ
+
+    assert numerical_from_arrow(_arrow("forall a b, a -> b -> a")) == "//010"
+    assert numerical_from_arrow(_arrow("forall b a, a -> b -> a")) == "//101"
+    assert numerical_from_arrow(_arrow("forall b a, b -> a -> b")) == "//010"
+    assert numerical_from_arrow(_arrow("forall c d, c -> d -> c")) == "//010"
+
+
+def trace_f(f):
+    def _inner(*args, **kwargs):
+        result = f(*args, **kwargs)
+        print(f"{f.__name__}({args}, {kwargs}) = {result}")
+        return result
+
+    return _inner
+
+
+def unify_arrows(t1: TyArrow, t2: TyArrow) -> bool:
+    return numerical_from_arrow(t1) == numerical_from_arrow(t2)
+
+
+@trace_f
+def unify_types(t1: AST, t2: AST) -> Dict[str, AST] | Error:
+    if type(t1) is TyVar and type(t2) is TyConst:
+        return {t1.var: t2}
+    elif type(t2) is TyVar and type(t2) is TyConst:
+        return {t2.var: t1}
+    elif type(t1) is TyVar and type(t2) is TyVar:
+        if t1.var == t2.var:
+            return {t1.var: t2}
+        else:
+            return Error(f"Not equal vars {t1} {t2}")
+    elif type(t1) is TyConst and type(t2) is TyConst:
+        if t1.typ == t2.typ:
+            return {}
+        else:
+            return Error(f"Can't unify {t1} and {t2}")
+    elif type(t1) is TyArrow and type(t2) is TyArrow:
+        if len(t1.args) != len(t2.args):
+            return Error(f"Functions types with distinct lengths {t1} {t2}")
+        if not unify_arrows(t1, t2):
+            return Error(
+                f"Couldn't unify functions {t1}, {t2} (remember that the order of variables in in forall mater)"
+            )
+
+    return Error(f"Unknown unification {t1} {t2}")
+
+
+def set_type(ast: AST, env: TypeEnv) -> None:
+    if type(ast) is TVar:
+        if ast.typ is not None:
+            return
+        typ = env.get(ast.name)
+        if typ is None:
+            raise TypeError(f"Unknow type for variable {ast.name}")
+        ast.typ = typ
+        return
+    raise TypeError(f"Don't know to to set type of {ast}")
+
+
+def set_types(asts: Iterable[AST], env: TypeEnv) -> None:
+    for arg in asts:
+        set_type(arg, env)
+
+
+@trace_f
+def typecheck(ast: AST, env: TypeEnv = {}) -> TypeEnv | Error:
+    if type(ast) is TScript:
+        for expr in ast.exprs:
+            result = typecheck(expr, env)
+            if type(result) is str:  # error
+                return result
+        return env
+    elif type(ast) is TDef:
+        env[ast.name] = ast.typ
+        newenv = deepcopy(env)
+        assert type(ast.typ) is TyArrow
+        for arg, typ in zip(ast.args, ast.typ.args[:-1]):
+            if type(arg) is str:  # ignore units on the arguments
+                newenv[arg] = typ
+        return typecheck(ast.body, newenv)
+    elif type(ast) is TFun:
+        assert type(ast.typ) is TyArrow
+        newenv = deepcopy(env)
+        for arg, typ in zip(ast.args, ast.typ.args[:-1]):
+            if type(arg) is str:  # ignore units on the arguments
+                newenv[arg] = typ
+        result = typecheck(ast.body, newenv)
+        if type(result) is str:
+            return result
+        return newenv
+    elif type(ast) is TApply:
+        set_type(ast.func, env)
+        if type(ast.func.typ) is not TyArrow:
+            return Error(f"Not a function type at {ast}")
+
+        set_types(ast.args, env)
+        args = zip(ast.func.typ.args, [x.typ for x in ast.args])  # type: ignore
+        for t1, t2 in args:
+            if (t1 is None) or (t2 is None):
+                return Error(f"No type information at {t1} or {t2}")
+            uresult = unify_types(t1, t2)
+            if type(uresult) is str:
+                return Error(uresult)
+        return env
+    elif type(ast) is TIfElse:
+        cond = typecheck(ast.cond, env)
+        if type(cond) is str:  # Error
+            return cond
+        then = typecheck(ast.then, env)
+        if type(then) is str:
+            return then
+        else_ = typecheck(ast.else_, env)
+        if type(else_) is str:
+            return else_
+        if ast.then.typ != ast.else_.typ:
+            return Error(f"'if' branches need to have the same type at {ast}")
+        elif ast.cond.typ != TyConst("bool"):
+            return Error(f"'if' condition need to have boolean type at {ast}")
+        return env
+    elif type(ast) is TBin:
+        results = set(x.typ for x in ast.values if type(x) is not TOp)
+        if len(results) > 1 or len(results) == 0:
+            return Error(f"All operands on binary expressions must have the same type")
+
+    return Error("End of typecheck function, dunno what to do")
+
+
+def test_typecheck():
+    assert typecheck(
+        parse("fun f x : forall, (forall, int -> int) -> int  -> int => f x")
+    ) == {
+        "f": TyArrow(args=[TyConst(typ="int"), TyConst(typ="int")], forall=[]),
+        "x": TyConst(typ="int"),
+    }
+    assert (
+        typecheck(
+            parse("fun f x : forall, (forall, int -> int) -> string  -> int => f x")
+        )
+        == "Can't unify TyConst(typ='int') and TyConst(typ='string')"
+    )
 
 
 def main():
