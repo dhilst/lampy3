@@ -119,7 +119,18 @@ def adt(datatype, *ctrs: str):
             for cls in ctrs)
     return (basecls, *clss)
 
+class Data:
+    def __init__(self, base):
+        self.base = base
+        self.ctrs = []
+    def __or__(self, ctr):
+        self.ctrs.append(ctr)
+        return self
+    def __gt__(self, ctr):
+        self.ctrs.append(ctr)
+        return adt(self.base, *self.ctrs)
+
 def test_adt():
-    Maybe, Just, Nothing = adt("Maybe", "Just v", "Nothing")
+    Maybe, Just, Nothing = Data("Maybe") | "Just v" > "Nothing"
     assert isinstance(Just(1), Maybe)
     assert isinstance(Nothing(), Maybe)

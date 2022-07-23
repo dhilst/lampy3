@@ -5,10 +5,23 @@ from fphack import pipefy, pipefy_builtins, ExceptionMonad, adt, map, reduce, fi
 # Hacky setup
 pipefy_builtins(__name__)
 
-Term, App, Var, Lamb = adt("Term", 
-                           "App f arg",
-                           "Var name",
-                           "Lamb var body")
+class Data:
+    def __init__(self, base):
+        self.base = base
+        self.ctrs = []
+    def __or__(self, ctr):
+        self.ctrs.append(ctr)
+        return self
+    def __gt__(self, ctr):
+        self.ctrs.append(ctr)
+        return adt(self.base, *self.ctrs)
+ 
+Term, App, Var, Lamb, Arrow, Base = Data("Term") \
+    | "App f arg" \
+    | "Var name"  \
+    | "Lamb var body"  \
+    | "Arrow targ tret" \
+    > "Base" 
 
 def freevars(t):
     assert isinstance(t, Term)
