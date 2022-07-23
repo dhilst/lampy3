@@ -56,7 +56,8 @@ def test_pipefy():
 
 class ExceptionMonad:
     blacklist = (AssertionError, NameError, ImportError, SyntaxError, MemoryError,
-                 OverflowError, StopIteration, StopAsyncIteration, SystemError, Warning)
+                 OverflowError, StopIteration, StopAsyncIteration, SystemError, Warning,
+                 AttributeError)
     def __init__(self, v):
         self.v = v
 
@@ -96,6 +97,9 @@ class ExceptionMonad:
             return self.v == other.v
         else:
             return self.v == other
+
+    def __repr__(self):
+        return f"ExceptionMonad({self.v})"
 
 
 def test_ExceptionMonad():
