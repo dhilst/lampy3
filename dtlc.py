@@ -1,10 +1,8 @@
 import re
 from typing import *
-from dataclasses import dataclass
 from fphack import pipefy, pipefy_builtins, ExceptionMonad, adt, map, reduce, filter
 
 # Hacky setup
-dc = dataclass(frozen=True) # type: ignore
 pipefy_builtins(__name__)
 
 Term, App, Var, Lamb = adt("Term", 
@@ -117,7 +115,7 @@ def normal_form(term):
     assert isinstance(term, Term)
     def spine(term, args):
         if type(term) is App:
-            return spine(term.f, [term.a, *args])
+            return spine(term.f, [term.arg, *args])
         elif type(term) is Lamb:
             if not args:
                 return Lamb(term.var, normal_form(term.body))
@@ -126,12 +124,58 @@ def normal_form(term):
                 return spine(subst(term.var, arg, term.body), args)
 
         else:
-            return reduce(App, term, map(normal_form, args))
+            return reduce(App, map(normal_form, args), term)
     return spine(term, [])
 
 def beta_eq(term1, term2):
     assert isinstance(term1, Term)
     assert isinstance(term2, Term)
     return alpha_eq(normal_form(term1), normal_form(term2))
+
+
+def lamb(*args):
+    "construct mutli arguments lambdas"
+    *args, body = args
+    body = Var(body) if type(body) is str else body
+    return reduce(lambda acc, arg: Lamb(arg, acc), reversed(args), body)
+
+def app(*args):
+    "construct multi arguments applications"
+    f, *args = (Var(arg) if type(arg) is str else arg for arg in args)
+    return reduce(lambda acc, arg: App(acc, arg), args, f)
+
+
+def test_beta_eq():
+    assert lamb("a", "a") == Lamb("a", Var("a"))
+    assert lamb("a", "b", "a") == Lamb("a", Lamb("b", Var("a")))
+    assert app("a", "b") == App(Var("a"), Var("b"))
+    assert app("a", "b", "c") == App(App(Var("a"), Var("b")), Var("c"))
+
+    assert beta_eq(app(lamb("a", "a"), "b"), Var("b"))
+    assert beta_eq(app(lamb("a", "b"), "c"), Var("b"))
+
+    true = lamb("a", "b", "a")
+    false = lamb("a", "b", "b")
+
+    assert beta_eq(app(true, "x", "y"), Var("x"))
+    assert beta_eq(app(false, "x", "y"), Var("y"))
+
+    assert beta_eq(app(lamb("x", "y", app("x", "y")), "y"),
+                   lamb("y0", app("y", "y0")))
+
+    zero = lamb("s", "z", "z")
+    one = lamb("s", "z", app("s", "z"))
+    two = lamb("s", "z", app("s", app("s", "z")))
+    tree = lamb("s", "z", app("s", app("s", app("s", "z"))))
+    plus = lamb("m", "n", "s", "z", app("m", "s", app("n", "s", "z")))
+
+    assert normal_form(app(plus, zero, zero)) == zero
+    assert normal_form(app(plus, zero, one)) == one
+    assert normal_form(app(plus, one, zero)) == one
+    assert normal_form(app(plus, one, one)) == two
+    assert normal_form(app(plus, one, two)) == tree
+    six = app(plus, tree, tree)
+    four = app(plus, two, two)
+    assert beta_eq(app(plus, four, two), six)
 
 
