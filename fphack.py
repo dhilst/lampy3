@@ -1,5 +1,7 @@
+"Useful functional hacks"
 import sys
-from functools import partial
+from functools import partial, reduce
+from dataclasses import make_dataclass
 
 class Pipe:
     def __init__(self, f, *args, **kwargs):
@@ -23,7 +25,10 @@ def pipefy(f):
             return Pipe(f, *args, **kwargs)
     return wrapper
 
+
+
 def patch_module(m, f, into, blacklist=[]):
+    blacklist = blacklist + 'int str list tuple dict float bool type'.split()
     import importlib
     if m not in sys.modules:
         importlib.import_module(m)
@@ -35,12 +40,20 @@ def patch_module(m, f, into, blacklist=[]):
             into.__dict__[k] = f(v)
 
 
-patch_module('builtins', pipefy, __name__)
-patch_module('functools', pipefy, __name__)
-patch_module('operator', pipefy, __name__)
+def pipefy_builtins(mod):
+    patch_module('functools', pipefy, mod)
+    patch_module('operator', pipefy, mod)
 
-assert (range(1, 10) @ filter(lt(..., 5), ...) @        # type: ignore
-        map(mul(2, ...), ...) @ list(...)) == [2,4,6,8] # type: ignore
+filter = pipefy(filter) # type: ignore
+map = pipefy(map) # type: ignore
+reduce = pipefy(reduce) # type: ignore
+
+def test_pipefy():
+    patch_module('functools', pipefy, __module__)
+    patch_module('operator', pipefy, __module__)
+    patch_module('builtins', pipefy, __module__)
+    assert (range(1, 10) @ filter(lt(..., 5), ...) @        # type: ignore
+            map(mul(2, ...), ...) @ list(...)) == [2,4,6,8] # type: ignore
 
 class ExceptionMonad:
     blacklist = (AssertionError, NameError, ImportError, SyntaxError, MemoryError,
@@ -85,16 +98,18 @@ class ExceptionMonad:
         else:
             return self.v == other
 
-@pipefy        
-def sub(a, b):
-    result = a - b
-    if result < 0:
-        raise ValueError("underflow")
-    return result
 
-@pipefy
-def add(a, b):
-    return lakdfjald
+def test_ExceptionMonad():
+    assert (ExceptionMonad.ret(1) @ sub(..., 1) @ sub(..., 1)) == ValueError("underflow") 
+    assert (ExceptionMonad.ret(3) @ sub(..., 1) @ sub(..., 1)) == 1
 
-assert (ExceptionMonad.ret(1) @ sub(..., 1) @ sub(..., 1)) == ValueError("underflow") 
-assert (ExceptionMonad.ret(3) @ sub(..., 1) @ sub(..., 1)) == 1
+def adt(datatype, *ctrs: str):
+    basecls = type(datatype, (), {})
+    klass = lambda x: x.split()[0]
+    fields = lambda x: x.split()[1:]
+    clss = (make_dataclass(klass(cls),
+                           bases=(basecls,),
+                           fields=fields(cls),
+                           frozen=True)
+            for cls in ctrs)
+    return (basecls, *clss)
