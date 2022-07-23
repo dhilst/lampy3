@@ -47,11 +47,10 @@ def pipefy_builtins(mod):
 filter = pipefy(filter) # type: ignore
 map = pipefy(map) # type: ignore
 reduce = pipefy(reduce) # type: ignore
+list = pipefy(list) # type: ignore
+pipefy_builtins(__name__)
 
 def test_pipefy():
-    patch_module('functools', pipefy, __module__)
-    patch_module('operator', pipefy, __module__)
-    patch_module('builtins', pipefy, __module__)
     assert (range(1, 10) @ filter(lt(..., 5), ...) @        # type: ignore
             map(mul(2, ...), ...) @ list(...)) == [2,4,6,8] # type: ignore
 
@@ -100,6 +99,12 @@ class ExceptionMonad:
 
 
 def test_ExceptionMonad():
+    @pipefy
+    def sub(a, b):
+        c = a - b
+        if c < 0:
+            raise ValueError("underflow")
+        return c
     assert (ExceptionMonad.ret(1) @ sub(..., 1) @ sub(..., 1)) == ValueError("underflow") 
     assert (ExceptionMonad.ret(3) @ sub(..., 1) @ sub(..., 1)) == 1
 
@@ -113,3 +118,8 @@ def adt(datatype, *ctrs: str):
                            frozen=True)
             for cls in ctrs)
     return (basecls, *clss)
+
+def test_adt():
+    Maybe, Just, Nothing = adt("Maybe", "Just v", "Nothing")
+    assert isinstance(Just(1), Maybe)
+    assert isinstance(Nothing(), Maybe)
