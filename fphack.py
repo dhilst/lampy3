@@ -25,8 +25,6 @@ def pipefy(f):
             return Pipe(f, *args, **kwargs)
     return wrapper
 
-
-
 def patch_module(m, f, into, blacklist=[]):
     blacklist = blacklist + 'int str list tuple dict float bool type'.split()
     import importlib
@@ -39,7 +37,6 @@ def patch_module(m, f, into, blacklist=[]):
             and not k.startswith('__') and k not in blacklist):
             into.__dict__[k] = f(v)
 
-
 def pipefy_builtins(mod):
     patch_module('functools', pipefy, mod)
     patch_module('operator', pipefy, mod)
@@ -49,6 +46,7 @@ map = pipefy(map) # type: ignore
 reduce = pipefy(reduce) # type: ignore
 list = pipefy(list) # type: ignore
 pipefy_builtins(__name__)
+reversed = pipefy(reversed)
 
 def test_pipefy():
     assert (range(1, 10) @ filter(lt(..., 5), ...) @        # type: ignore

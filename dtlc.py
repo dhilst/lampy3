@@ -1,18 +1,20 @@
 import re
 from typing import *
-from fphack import pipefy, pipefy_builtins, ExceptionMonad, Data, map, reduce, filter, list as list_
-from miniparser import pregex, pand, por # type: ignore
+from fphack import pipefy, pipefy_builtins, ExceptionMonad, Data, map, reduce, filter, list as list_, reversed, partial
 
 # Hacky setup
 pipefy_builtins(__name__)
 
-Term, App, Var, Lamb, Arrow, Int, Bool = Data("Term") \
+
+
+Kinds, Star, Box = Data("Kinds") | "Star" > "Box"
+Term, App, Var, Lamb, Forall, Kind = Data("Term") \
     | "App f arg" \
     | "Var name"  \
     | "Lamb var typ body"  \
-    | "Arrow arg ret" \
-    | "Int" \
-    > "Bool"
+    | "Forall var typ body" \
+    > "Kind kind"
+
 
 class TypeEnv:
     def __init__(self, **data):
@@ -22,28 +24,76 @@ class TypeEnv:
     def __add__(self, d):
         return self.extend(d)
     def __getitem__(self, k):
+        if k not in self._data:
+            raise KeyError(f"Unbound variable {k} not in scope {self._data}")
         return self._data[k]
 
+allowed_kinds = {
+    (Kind(Star()), Kind(Star())),
+    (Kind(Star()), Kind(Box())),
+    (Kind(Box()), Kind(Star())),
+    (Kind(Box()), Kind(Box())),
+}
+
+initial_typeenv = TypeEnv(**{
+    "int": Kind(Star()),
+    "bool": Kind(Star()),
+})
+# the base types
+Int = lambda: Var("int")
+Bool = lambda: Var("bool")
+
+
+def trace_typecheck(tc):
+    def wrapper(term, env=initial_typeenv):
+        print(f"> typechecking {env._data} |- {term}")
+        t = tc(term, env)
+        print(f"< typechecking {env._data} |- {term} : {t}")
+        return t
+    return wrapper
+
+
 @pipefy
-def typecheck(term, env=TypeEnv()):
+@trace_typecheck
+def typecheck(term, env=initial_typeenv):
     assert type(env) is TypeEnv
     assert isinstance(term, Term)
     if type(term) is Var:
         return env[term.name]
     elif type(term) is App:
-        tf = typecheck(term.f, env)
-        if type(tf) is not Arrow:
-            raise TypeError(f"Expected a function type found a {tf}")
-        ta = typecheck(term.arg, env)
-        if ta != tf.arg:
-            raise TypeError(f"Expected a {tf.arg}, found a {ta}")
-        return tf.ret
+        app = term
+        tf = typecheck(app.f, env)
+        if type(tf) is Forall:
+            ta = typecheck(app.arg, env)
+            if not beta_eq(ta, tf.typ):
+                raise TypeError(f"Expected a {tf.typ}, found a {ta}")
+            return subst(tf.var, app.arg, tf.body)
     elif type(term) is Lamb:
+        typecheck(term.typ, env)
         newenv = env + {term.var: term.typ}
         tbody = typecheck(term.body, newenv)
-        return Arrow(term.typ, tbody)
+        lt = Forall(term.var, term.typ, tbody)
+        typecheck(lt, env)
+        return lt
+    elif type(term) is Forall:
+        s = typecheck_red(term.typ, env)
+        newenv = env + {term.var: term.typ}
+        t = typecheck_red(term.body, newenv)
+        if (s, t) not in allowed_kinds:
+            raise TypeError("Bad abstraction")
+        return t
+    elif type(term) is Kind:
+        if type(term.kind) is Star:
+            return Kind(Box())
+        elif type(term.kind) is Box:
+            raise TypeError("Invalid kind Box at term")
+        else:
+            assert False
     else:
         assert False
+
+def typecheck_red(term, env):
+    return typecheck(term, env) @ whnf(...)
 
 def freevars(t):
     assert isinstance(t, Term)
@@ -51,7 +101,9 @@ def freevars(t):
         return freevars(t.f) | freevars(t.arg)
     elif type(t) is Var:
         return {t.name}
-    elif type(t) is Lamb:
+    elif type(t) is Kind:
+        return {}
+    elif type(t) is Lamb or type(t) is Forall:
         return freevars(t.body) - {t.var}
     else:
         assert False, f"invalid value {t}"
@@ -62,16 +114,17 @@ def test_freevars():
     assert freevars(Lamb("x", Int(), Var("x"))) == set()
     assert freevars(Lamb("x", Int(), App(Var("y"), Var("x")))) == {"y"}
 
+@pipefy
 def whnf(t):
     def spine(t, args=[]):
         if type(t) is App:
             return spine(t.f, [a, *args])
-        elif type(t) is Lamb:
+        elif type(t) is Lamb or type(t) is Forall:
             assert len(args) > 1
             a, *args = args
             return spine(subst(t1.var, a, t1.body), args)
         else:
-            return reduce(App, f, args)
+            return reduce(App, args, t)
     return spine(t)
 
 @pipefy
@@ -84,18 +137,20 @@ def subst(var, replacement, term):
             return replacement
         else:
             return term
+    elif type(term) is Kind:
+        return term
     elif type(term) is App:
         return App(subst(var, replacement, term.f), 
                    subst(var,replacement, term.arg))
-    elif type(term) is Lamb:
+    elif type(term) is Lamb or type(term) is Forall:
         if term.var == var:
             return term
         elif term.var in freevars(replacement):
             new_termvar = freshvar(term.var, freevars(term.body) | freevars(replacement))
             new_body = subst(term.var, Var(new_termvar), term.body) @ subst(var, replacement, ...)
-            return Lamb(new_termvar, term.typ, new_body)
+            return type(term)(new_termvar, term.typ, new_body)
         else:
-            return Lamb(term.var, term.typ, subst(var, replacement, term.body))
+            return type(term)(term.var, term.typ, subst(var, replacement, term.body))
     else:
         assert False
 
@@ -134,8 +189,8 @@ def alpha_eq(term1, term2):
         return term1 == term2
     elif type(term1) is App:
         return alpha_eq(term1.f, term2.f) and alpha_eq(term1.arg, term2.arg)
-    elif type(term1) is Lamb:
-        return term1.typ == term2.typ and alpha_eq(term1.body, subst(term2.var, Var(term1.var), term2.body))
+    elif type(term1) is Lamb or type(term1) is Forall:
+        return beta_eq(term1.typ, term2.typ) and alpha_eq(term1.body, subst(term2.var, Var(term1.var), term2.body))
     else:
         assert False
 
@@ -149,16 +204,19 @@ def test_alpha_eq():
 
 def normal_form(term):
     assert isinstance(term, Term)
+
     def spine(term, args):
         if type(term) is App:
             return spine(term.f, [term.arg, *args])
         elif type(term) is Lamb:
             if not args:
-                return Lamb(term.var, term.typ, normal_form(term.body))
+                return Lamb(term.var, normal_form(term.typ), normal_form(term.body))
             else:
                 arg, *args = args
                 return spine(subst(term.var, arg, term.body), args)
-
+        elif type(term) is Forall:
+            return reduce (App, map(normal_form, args), 
+                           Forall(term.var, normal_form(term.typ), normal_form(term.body)))
         else:
             return reduce(App, map(normal_form, args), term)
     return spine(term, [])
@@ -168,91 +226,66 @@ def beta_eq(term1, term2):
     assert isinstance(term2, Term)
     return alpha_eq(normal_form(term1), normal_form(term2))
 
-
-def tokenize_type(s):
-    return s.split("(") @ map(lambda x : x.split(")"), ...) @ list_(...)
-    
-LPAR = pregex(r"\(")
-RPAR = pregex(r"\)")
-ARROW = pregex(r"->")
-VAR = pregex(r"\w+")
-
-def pvar(inp):
-    v, inp = VAR(inp)
-    if v == "int":
-        return Int(), inp
-    elif v == "bool":
-        return Bool(), inp
-    else:
-        assert False, "unexpected type {inp}"
-def parrow(inp):
-    (t1, _, t2), inp = pand(patom, ARROW, pexpr)(inp)
-    return Arrow(t1, t2), inp
-def ppar(inp):
-    (_, e, _), inp = pand(LPAR, pexpr, RPAR)(inp)
-    return e, inp
-def patom(inp):
-    return por(ppar, pvar)(inp)
-def pexpr(inp):
-    return por(parrow, patom)(inp)
-def typ(inp):
-    return pexpr(inp)[0]
-
-def test_typ_parser():
-    assert typ("bool") == Bool()
-    assert typ("int") == Int()
-    assert typ("int -> bool") == Arrow(Int(), Bool())
-    assert typ("int -> int -> bool") == Arrow(Int(), Arrow(Int(), Bool()))
-    assert typ("(int -> int) -> bool") == Arrow(Arrow(Int(), Int()), Bool())
-
-def lamb(*args):
-    "construct mutli arguments lambdas"
+def abstr(f, *args):
+    assert len(args) >= 2
     *args, body = args
+    args = zip(args[0::2], args[1::2]) @ list_(...) @ reversed(...) @ list_(...)
     body = Var(body) if type(body) is str else body
     def fold_f(body, arg):
-        assert ":" in arg, f"syntax error, missing the type annotaion (\": some_type\") in {arg}"
-        arg, typ_ = arg.split(":", 1) @ map(str.strip, ...) @ list_(...)
-        return Lamb(arg, typ(typ_), body) 
-    return reduce(fold_f, reversed(args), body)
+        assert len(arg) is 2
+        arg, typ = arg
+        return f(arg, typ, body)
+    return reduce(fold_f, args, body)
+
+lamb = partial(abstr, Lamb)
+forall = partial(abstr, Forall)
 
 def app(*args):
     "construct multi arguments applications"
     f, *args = (Var(arg) if type(arg) is str else arg for arg in args)
     return reduce(lambda acc, arg: App(acc, arg), args, f)
 
+def test_constructors():
+    assert app("x", "y") == App(Var("x"), Var("y"))
+    assert lamb("x", Int(), 
+                "y", Int(), 
+                "x") == Lamb("x", Int(), Lamb("y", Int(), Var("x")))
+    assert forall("x", Int(), 
+                "y", Int(), 
+                "x") == Forall("x", Int(), Forall("y", Int(), Var("x")))
+
 def test_typecheck():
-    def typchk(t, env=None):
-        env = TypeEnv() if env is None else env
+    def typchk(t, env=initial_typeenv):
         return ExceptionMonad.ret(t) @ typecheck(..., env)
 
-    assert typchk(Var("x"), TypeEnv(x=Int())) == typ("int")
-    assert typchk(lamb("x : int", "x")) == typ("int -> int")
-    assert typchk(app(lamb("b : bool", "b"), "i"), TypeEnv(i=typ("int"))) == TypeError("Expected a Bool(), found a Int()")
+    assert typchk(Var("x"), TypeEnv(x=Int())) == Int()
+    assert typchk(lamb("x", Int(), "x")) == Forall("x", Int(), Int())
+    assert typchk(app(lamb("b", Bool(), "b"), "i"), initial_typeenv + {'i': Int()}) == TypeError("Expected a Var(name='bool'), found a Var(name='int')")
 
-    id_int = lamb("x : int", "x")
-    apply_f = lamb("f : int -> int", "x : int", app("f", "x"))
-    assert typchk(app(apply_f, id_int, "i"), TypeEnv(i=Int())) == typ("int")
+    id_int = lamb("x", Int(), "x")
+    apply_f = lamb("f", forall("_", Int(), Int()), 
+                   "x", Int(), 
+                   app("f", "x"))
+    assert typchk(app(apply_f, id_int, "i"), initial_typeenv + {"i": Int()}) == Int()
 
 def test_beta_eq():
-    assert lamb("a : int", "a") == Lamb("a", Int(), Var("a"))
-    assert lamb("a : int", "b : bool", "a") == Lamb("a", Int(), Lamb("b", Bool(), Var("a")))
-    assert app("a", "b") == App(Var("a"), Var("b"))
-    assert app("a", "b", "c") == App(App(Var("a"), Var("b")), Var("c"))
+    assert beta_eq(app(lamb("a", Int(), "a"), "b"), Var("b"))
+    assert beta_eq(app(lamb("a", Int(), "b"), "c"), Var("b"))
 
-    assert beta_eq(app(lamb("a : int", "a"), "b"), Var("b"))
-    assert beta_eq(app(lamb("a : int", "b"), "c"), Var("b"))
+    nf = normal_form
+    true = lamb("a", Bool(), "b", Bool(), "a")
+    false = lamb("a", Bool(), "b", Bool(), "b")
 
-    true = lamb("a : bool", "b : bool", "a")
-    false = lamb("a : bool", "b : bool", "b")
+    assert nf(app(true, "x", "y")) == Var("x") 
+    assert nf(app(false, "x", "y")) == Var("y")
 
-    assert beta_eq(app(true, "x", "y"), Var("x"))
-    assert beta_eq(app(false, "x", "y"), Var("y"))
+    assert beta_eq(app(lamb("x", Int(), "y", Bool(), app("x", "y")), "y"),
+                   lamb("y0", Bool(), app("y", "y0")))
 
-    assert beta_eq(app(lamb("x : int", "y : bool", app("x", "y")), "y"),
-                   lamb("y0 : bool", app("y", "y0")))
-
-    id_int = lamb("x : int", "x")
-    apply_f = lamb("f : int -> int", "x : int", app("f", "x"))
+    id_int = lamb("x", Int(), "x")
+    apply_f = lamb("f", forall("_", Int(), Int()), 
+                   "x", Int(), 
+                   app("f", "x"))
     assert beta_eq(app(apply_f, id_int, "i"), Var("i"))
 
     # @TODO type annotate these functions
