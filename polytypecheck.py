@@ -1,3 +1,4 @@
+import sys
 from typing import *
 import ast
 from dataclasses import dataclass
@@ -164,7 +165,14 @@ class Typechecker(ast.NodeVisitor):
 
     def visit_Call(self, node):
         if type(node.func) is ast.Name:
-            if node.func.id == "type_":
+            if node.func.id == "type_dump":
+                msg = node.args[0].value
+                name = node.args[1].id
+                print(msg, f"{name} : {self.typeenv.get(name, 'NOT FOUND')}")
+                self.generic_visit(node)
+                return
+
+            elif node.func.id == "type_":
                 name, typ = TypeTerm.parse(node.args[0].value)
                 self.typeenv[name] = typ
                 self.generic_visit(node)
@@ -195,7 +203,7 @@ class Typechecker(ast.NodeVisitor):
                 expected_args = self.typeenv[node.func.id].args_without_return
                 result = Unify.unify(expected_args, actual_args)
                 if result.is_err:
-                    raise TypeError(result.err)
+                    print("Typecheck error: ", result.err, file=sys.stderr)
                 
         self.generic_visit(node)
 
@@ -226,11 +234,34 @@ x = 1
 
 if is_positive(x):
    # x has type positive here
+   type_dump("inside if", x)
    sub(x)
 
-# x type int again
-sub(x) # type error
+type_dump("outside if", x)
+sub(x)
+
+type_("non_empty : list -> !non_empty")
+def non_empty(l):
+    return len(l) >= 1
+
+type_("head : non_empty -> A")
+def head(l):
+    return l[0]
+
+type_("l : list")
+l = [1]
+type_dump("created list", l)
+
+type_("id_ : B -> B")
+id_ = lambda x: x
+
+if non_empty(l):
+    # typechecked
+    type_dump("inside if", l)
+    id_(head(l))
+
+head(l)
 """	
 )
-print("ok")
+
 
