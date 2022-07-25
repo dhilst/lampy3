@@ -1,74 +1,49 @@
 import sys
-from typing import *
 import ast
+from typing import *
 from dataclasses import dataclass
-from fphack import map
+from fphack import map, Data
 
-class TypeTerm:
-    @staticmethod
-    def from_str(input: str):
-        if "->" in input:
-            return Arrow.from_str(input)
-        elif input.startswith("!"):
-            return TypeGuard(input[1:])
-        elif input[0].isupper():
-            return Var(input)
-        else:
-            return Const(input)
+def type_(s):
+    pass
 
-    @staticmethod
-    def parse(input):
-        name, term = input.split(":", 1) @ map(str.strip, ...)
-        return name, TypeTerm.from_str(term)
+def type_dump(s, t):
+    pass
 
-@dataclass(frozen=True)
-class TypeGuard(TypeTerm):
-    typ: str
+def arrow_from_str(input):
+    return Arrow([type_from_str(x.strip()) for x in input.split("->")])
 
-@dataclass(frozen=True)
-class Var(TypeTerm):
-    name: str
+def type_from_str(input: str):
+    if "->" in input:
+        return arrow_from_str(input)
+    elif input.startswith("!"):
+        return TypeGuard(input[1:]) # type: ignore
+    elif input[0].isupper():
+        return Var(input)
+    else:
+        return Const(input)
 
-@dataclass(frozen=True)
-class Arrow(TypeTerm):
-    args: list[TypeTerm]
+def type_parse(input):
+    name, term = input.split(":", 1) @ map(str.strip, ...)
+    return name, type_from_str(term)
 
-    @staticmethod
-    def from_str(input):
-        return Arrow([TypeTerm.from_str(x.strip()) for x in input.split("->")])
+TypeTerm, TypeGuard, Var, Arrow, Const = Data("TypeTerm") \
+    | "TypeGuard typ" \
+    | "Var typ" \
+    | "Arrow args" \
+    > "Const name"
 
-    @property
-    def args_without_return(self):
-        return Arrow(self.args[:-1])
-
-@dataclass(frozen=True)
-class Const(TypeTerm):
-    name: str
-
-Subst = Set[Tuple[str, TypeTerm]]
+Result, Ok, Err = Data("Result") \
+    | "Ok value" \
+    > "Err err"
 
 T = TypeVar("T")
-class Result(Generic[T]):
-    @overload
-    def __init__(self, err: str): ...
-    @overload
-    def __init__(self, ok: T): ...
-
-    def __init__(self, *, ok=None, err=None):
-        if ok is not None:
-            self.value = ok
-            self.is_ok = True
-        else:
-            self.err = err
-            self.is_ok = False
-
-    @property
-    def is_err(self):
-        return not self.is_ok
 
 class Unify:
     @staticmethod
-    def subst1(term: TypeTerm, subst: Subst) -> TypeTerm:
+    def subst1(term, subst):
+        assert isinstance(term, TypeTerm)
+        assert isinstance(tern, set)
         if type(term) is Var:
             for name, replacement in subst:
                 if name == term.name:
@@ -83,42 +58,45 @@ class Unify:
             assert False, f"invalid case in subst1 {term}"
 
     @staticmethod
-    def substmult(subst: Subst, replacement: Subst) -> Subst:
+    def substmult(subst, replacement):
+        isinstance(subst, set)
+        isinstance(replacement, set)
         return {(name, Unify.subst1(term, replacement)) for (name, term) in subst}
 
     @staticmethod
-    def unify(t1: TypeTerm, t2: TypeTerm, subst: Subst = set()) -> Result[Subst]:
+    def unify(t1, t2, subst = set()):
         assert isinstance(t1, TypeTerm)
         assert isinstance(t2, TypeTerm)
+        assert isinstance(subst, set)
         if t1 == t2:
-            return Result(ok=subst)
+            return Ok(subst)
         elif type(t1) is Arrow and type(t2) is Arrow:
             if len(t1.args) != len(t1.args):
-                return Result(err=f"unification error {t1} <> {t2}")
+                return Err(f"unification error {t1} <> {t2}")
             else:
                 for a1, a2 in zip(t1.args, t2.args):
                     r = Unify.unify(a1, a2, subst)
-                    if r.is_err:
+                    if type(r) is Err:
                         return r
                     else:
                         subst |= r.value
-                return Result(ok=subst)
+                return Ok(subst)
         elif type(t2) is Var and type(t1) is not Var:
             return Unify.unify(t2, t1, subst)
         elif type(t1) is Var:
             newsubst = {(t1.name, t2)}
             subst = Unify.substmult(subst, newsubst) | newsubst
-            return Result(ok=subst)
+            return OK(subst)
         elif type(t1) is Const and type(t2) is Const:
             if t1.name != t2.name:
-                return Result(err=f"Type error, expected {t1.name}, found {t2.name}")
+                return Err(f"Type error, expected {t1.name}, found {t2.name}")
             else: 
-                return Result(ok=subst)
+                return Ok(subst)
         elif type(t1) is TypeGuard and type(t2) is TypeGuard:
             if t1.typ != t2.typ:
-                return Result(err=f"Type error, expected {t1.typ}, found {t2.typ}")
+                return Err(f"Type error, expected {t1.typ}, found {t2.typ}")
             else: 
-                return Result(ok=subst)
+                return Ok(subst)
         else:
             assert False, f"invalid case {t1} {t2}"
 
@@ -173,7 +151,7 @@ class Typechecker(ast.NodeVisitor):
                 return
 
             elif node.func.id == "type_":
-                name, typ = TypeTerm.parse(node.args[0].value)
+                name, typ = type_parse(node.args[0].value)
                 self.typeenv[name] = typ
                 self.generic_visit(node)
                 return
@@ -184,7 +162,7 @@ class Typechecker(ast.NodeVisitor):
                 for arg in node.args:
                     if type(arg) is ast.Constant:
                         actual_args.append(
-                            TypeTerm.from_str(type(arg.value).__name__))
+                            type_from_str(type(arg.value).__name__))
                     elif type(arg) is ast.Name:
                         if arg.id in self.typeenv:
                             actual_args.append(
@@ -200,9 +178,9 @@ class Typechecker(ast.NodeVisitor):
 
                 actual_args = Arrow(
                     [arg for arg in actual_args])
-                expected_args = self.typeenv[node.func.id].args_without_return
+                expected_args = Arrow(self.typeenv[node.func.id].args[:-1])
                 result = Unify.unify(expected_args, actual_args)
-                if result.is_err:
+                if type(result) is Err:
                     print("Typecheck error: ", result.err, file=sys.stderr)
                 
         self.generic_visit(node)
@@ -263,5 +241,3 @@ if non_empty(l):
 head(l)
 """	
 )
-
-
