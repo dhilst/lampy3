@@ -1,14 +1,15 @@
 from typing import *
 import ast
 from dataclasses import dataclass
+from fphack import map
 
 class TypeTerm:
     @staticmethod
     def from_str(input: str):
-        if type(input) is not str:
-            breakpoint()
         if "->" in input:
             return Arrow.from_str(input)
+        elif input.startswith("!"):
+            return TypeGuard(input[1:])
         elif input[0].isupper():
             return Var(input)
         else:
@@ -16,8 +17,12 @@ class TypeTerm:
 
     @staticmethod
     def parse(input):
-        name, term = (TypeTerm.from_str(x.strip()) for x in input.split(":"))
-        return name, term
+        name, term = input.split(":", 1) @ map(str.strip, ...)
+        return name, TypeTerm.from_str(term)
+
+@dataclass(frozen=True)
+class TypeGuard(TypeTerm):
+    typ: str
 
 @dataclass(frozen=True)
 class Var(TypeTerm):
@@ -29,7 +34,7 @@ class Arrow(TypeTerm):
 
     @staticmethod
     def from_str(input):
-        return Arrow([x.strip() for x in input.split("->")])
+        return Arrow([TypeTerm.from_str(x.strip()) for x in input.split("->")])
 
     @property
     def args_without_return(self):
@@ -71,10 +76,10 @@ class Unify:
                 return term
         elif type(term) is Arrow:
             return Arrow([Unify.subst1(arg, subst) for arg in term.args])
-        elif type(term) is Const:
+        elif type(term) is Const or type(term) is TypeGuard:
             return term
         else:
-            assert False, "invalid case in subst1"
+            assert False, f"invalid case in subst1 {term}"
 
     @staticmethod
     def substmult(subst: Subst, replacement: Subst) -> Subst:
@@ -82,6 +87,8 @@ class Unify:
 
     @staticmethod
     def unify(t1: TypeTerm, t2: TypeTerm, subst: Subst = set()) -> Result[Subst]:
+        assert isinstance(t1, TypeTerm)
+        assert isinstance(t2, TypeTerm)
         if t1 == t2:
             return Result(ok=subst)
         elif type(t1) is Arrow and type(t2) is Arrow:
@@ -106,23 +113,42 @@ class Unify:
                 return Result(err=f"Type error, expected {t1.name}, found {t2.name}")
             else: 
                 return Result(ok=subst)
+        elif type(t1) is TypeGuard and type(t2) is TypeGuard:
+            if t1.typ != t2.typ:
+                return Result(err=f"Type error, expected {t1.typ}, found {t2.typ}")
+            else: 
+                return Result(ok=subst)
         else:
-            assert False, "invalid case"
+            assert False, f"invalid case {t1} {t2}"
 
 class Typechecker(ast.NodeVisitor):
     def __init__(self):
         super().__init__()
         self.typeenv = {}
 
-    def visit_FunctionDef(self, node):
-        # gatther the signature into of the
-        # function from @sig decorator
-        for dec in node.decorator_list:
-            if dec.func.id == "sig":
-                typ = Arrow([TypeTerm.from_str(x.strip()) for x 
-                             in dec.args[0].value.split(":")[1].split(" -> ")])
-                self.typeenv[node.name] = typ
+    def visit_If(self, node):
+        if (type(node.test) is ast.Call and type(node.test.func) is ast.Name and 
+            node.test.func.id in self.typeenv and 
+            type(self.typeenv[node.test.func.id].args[-1]) is TypeGuard and
+            len(node.test.args) == 1
+            ):
+            typeguard = self.typeenv[node.test.func.id].args[-1]
+            call = node.test.func
+            arg = node.test.args[0].id
+            oldenv = self.typeenv.copy()
+            self.typeenv[arg] = Const(typeguard.typ)
+            for node_ in node.body:
+                self.generic_visit(node_)
+            self.typeenv = oldenv
+            for node_ in node.orelse:
+                self.generic_visit(node_)
+        else:
+            self.generic_visit(node)
 
+    def visit_Assign(self, node):
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
         if not node.name in self.typeenv:
             self.generic_visit(node)
             return
@@ -138,7 +164,7 @@ class Typechecker(ast.NodeVisitor):
 
     def visit_Call(self, node):
         if type(node.func) is ast.Name:
-            if node.func.id == "sig":
+            if node.func.id == "type_":
                 name, typ = TypeTerm.parse(node.args[0].value)
                 self.typeenv[name] = typ
                 self.generic_visit(node)
@@ -180,16 +206,31 @@ def typecheck(text, typeenv={}):
 
 typecheck(
 """
-def sig(*args, **kwargs):
-    return lambda f: f
+# type introduces a type
+def type_(s): ...
 
-@sig("inc : float -> A -> A")
-def inc(a, b):
-    return a + 1
+# ! at the begining introduces a typeguard
+# typeguards coerce its arguments inside if bodies
+type_("is_positive : int -> !positive")
+def is_positive(x):
+    return x >= 1
 
-@sig("foo : int -> float")
-def foo(a):
-    return float(inc(a, "a"))
+# typechecked, never called with x < 1
+type_("sub : positive -> int")
+def sub(x):
+    return x - 1
+
+# x has type int
+type_("x : int")
+x = 1
+
+if is_positive(x):
+   # x has type positive here
+   sub(x)
+
+# x type int again
+sub(x) # type error
 """	
 )
 print("ok")
+
