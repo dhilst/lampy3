@@ -116,8 +116,9 @@ def adt(datatype, *ctrs: str):
     fields = lambda x: x.split()[1:]
     clss = (make_dataclass(klass(cls),
                            bases=(basecls,),
-                           fields=fields(cls),
-                           frozen=True)
+                           fields=list(fields(cls)),
+                           frozen=True,
+                           eq=True)
             for cls in ctrs)
     return (basecls, *clss)
 
