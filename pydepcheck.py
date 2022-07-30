@@ -3,6 +3,36 @@ import inspect
 import importlib
 from ast import *
 
+unk = object()
+unit = object()
+function = type(lambda:None)
+builtins = vars(sys.modules['builtins'])
+
+class Type:
+    def __init__(self, *args):
+        self.args = args
+
+    @staticmethod
+    def is_a_type(other):
+        return other in {int, float, bool, tuple, list, float, dict, function, unit, unk} or type(other) is Type or type(other) is type
+
+    def __repr__(self):
+        args = ", ".join(str(arg) for arg in self.args)
+        return f"Type({args})"
+
+    def __eq__(self, other):
+        if type(other) is not Type:
+            return False
+
+        for arg, oarg in zip(self.args, other.args):
+            if type(arg) is function:
+                if not arg is oarg:
+                    return False
+            elif arg != oarg:
+                return False
+        return True
+
+
 def try_(func, *args, **kwargs):
     try:
         return func(*args, **kwargs), None
@@ -19,18 +49,6 @@ class Typer(NodeTransformer):
     def eval(self, node):
         return eval(compile(fix_missing_locations(Expression(node)), self.modname, "eval"), vars(self.mod))
 
-    # def visit_Assign(self, node):
-    #     if len(node.targets) == 1:
-    #         name = node.targets[0].id
-    #         if type(node.value) is Constant:
-    #             typ = type(node.value.value)
-    #         elif type(node.value) is Call and type(node.value.func) is Name:
-    #             if node.value.func.id is "prop":
-    #                 typ = type
-    #             else:
-    #                 typ = self.eval(node.value.func)
-    #         self.typeenv[name] = typ
-    
     def calc_ret_type(self, typ):
         if typ is None:
             return None
@@ -42,11 +60,35 @@ class Typer(NodeTransformer):
     def get_source(self, node):
         return get_source_segment(self.source, node)
 
+    def totype(self, node):
+        if type(node) is Name:
+            if node.id in self.typeenv:
+                return self.typeenv[node.id]
+            elif node.id in builtins:
+                return builtins[node.id]
+            else: 
+                print(f"Error : No type information for {node.id}")
+                return unk
+        elif type(node) is Constant:
+            return node.value
+
     def visit_Call(self, node):
         if node.func.id == "typedebug":
-            print(*(arg.value for arg in node.args))
-            return node
-
+            for arg in node.args:
+                if type(arg) is Constant:
+                    print(arg.value, end=" ")
+                elif type(arg) is Name:
+                    print(f"{arg.id} : {type(self.totype(arg))}", end=" ")
+                elif type(arg) is Call:
+                    t = self.visit(arg)
+                    print(f"{t.value} :- {type(self.totype(t))}", end=" ")
+                else:
+                    print(dump(arg))
+            else:
+                return
+            
+            print("")
+                  
         elif node.func.id == "type_":
             name = node.args[0].value
             typ = node.args[1]
@@ -63,26 +105,20 @@ class Typer(NodeTransformer):
             typargs = node.args[:nparms]
             reduced_typs = self.eval(Call(typ, typargs, keywords=[]))
             nodeargs = [self.visit(arg) for arg in node.args]
-            fargs, err = try_(self.eval, Tuple(nodeargs, Load()))
-            if err is not None:
-                print(f"Type error at {self.get_source(node)} : {err}")
-                return node
             
-            for typ, term in zip(reduced_typs, fargs):
-                # type(typ) is P do not work here, Python thinks that the imported P
-                # in the module is different from this P, even if it's the same
-                # I think this is because I import the module here, as workaround
-                # I use the module's P to test
-                if type(typ) is vars(self.mod).get('P'):
-                    if not isinstance(term, typ):
-                        print(f"Type error at {self.get_source(node)} : Not an instance of {typ}")
-                elif type(term) is not typ:
-                    print(f"Type error at {self.get_source(node)} : Got {type(term).__name__}, while expecting {typ.__name__}")
-                    # sys.exit(-1)
+            for typ, term in zip(reduced_typs, nodeargs):
+                term_ = self.totype(term)
+                if typ is self.mod.Type:
+                    if not Type.is_a_type(term_):
+                        print(f"Error 01 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                elif type(typ) is self.mod.Type:
+                    if term_ != typ:
+                        print(f"Error 02 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                elif type(term_) is not typ:
+                    print(f"Error 03 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {type(term_)}")
 
             rettyp = self.calc_ret_type(reduced_typs[-1])
             return Constant(rettyp)
-
         return node
 
 def typecheck(module_name):
@@ -97,24 +133,5 @@ def type_(name, typ):
 def typedebug(*args):
     pass
 
-def prop(name, pred):
-    def __init__(self, *args):
-        if not pred(*args):
-            raise TypeError(f"{args} is not a valid {name}")
-        self.val = args
-        self.pred = pred
-
-    return type(name, tuple(), {'__init__': __init__})
-
-class P:
-    def __init__(self, p):
-        self.p = p
-
-    def __instancecheck__(self, other):
-        return self.p(other)
-
-    def __repr__(self):
-        return f"P({repr(self.p)}"
-
 if __name__ == '__main__':
-    typecheck(sys.argv[1])
+    typecheck(sys.argv[1]) 
