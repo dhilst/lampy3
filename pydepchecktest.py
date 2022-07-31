@@ -90,3 +90,60 @@ def test_nat():
     assert inc(int, pack_nat(int, 0, add1), 1) == 2
 
 
+type_("tlist", lambda T: (Type, Type))
+def tlist(T):
+    return Type(tlist, T)
+
+type_("cons", lambda T: (Type, T, tlist(T), tlist(T)))
+def cons(T, x, l):
+    return [x, *l]
+
+type_("nil", lambda T: (Type, tlist(T)))
+def nil(T):
+    return []
+
+type_("mklist", lambda T: (Type, list, tlist(T)))
+def mklist(T, l):
+    return l
+
+def test_tlist():
+    assert cons(str, "a", cons(str, "b", nil(str))) == ["a", "b"]
+    assert mklist(int, [1,2,3]) == [1,2,3]
+
+type_("vec", lambda T: (Type, int, Type))
+def vec(T, i):
+    return Type(vec, T, i)
+
+type_("mkvec", lambda T, l: (Type, tlist(T), vec(T, len(l))))
+def mkvec(T, l):
+    return l
+
+type_("vunpack", lambda T, n: (Type, int, vec(T, n), tlist(T)))
+def vunpack(T, n, vec):
+    return vec
+
+type_("vcons", lambda T, n: (Type, int, T, vec(T, n), vec(T, n + 1)))
+def vcons(T, n, x, vec_):
+    return [x, *vec_]
+
+type_("head", lambda T: (Type, vec(T, 1), T))
+def head(T, vec):
+    return vec[0]
+
+def test_tvec():
+    # we have dependent type checking but only because these lists
+    # exists statically, if they are created in runtime we will have
+    # no enough information to reduce the len(l) call in the mkvec type
+    assert mkvec(int, nil(int)) == []
+    assert vunpack(int, 3, mkvec(int, mklist(int, [1,2,3]))) == [1,2,3]
+    assert vcons(bool, 0, True, mkvec(bool, nil(bool))) == [True]
+    assert head(bool, mkvec(bool, mklist(bool, [False]))) == False
+    try:
+        head(bool, mkvec(bool, nil(bool))) # type error
+        # Error in head @ head(bool, mkvec(bool, nil(bool))) :
+        # Expected Type(<function vec at 0x7f9800b7bb50>, <class
+        # 'bool'>, 1), found Type(<function vec at 0x7f9800b7bb50>,
+        # <class 'bool'>, 0)
+        assert False
+    except IndexError:
+        pass

@@ -65,7 +65,9 @@ class Typer(NodeTransformer):
     def get_source(self, node):
         return get_source_segment(self.source, node)
 
-    def totype(self, node):
+    # receives a node and returns a value such that
+    # type(value) return the rigth type for the node
+    def to_value(self, node):
         if type(node) is Name:
             if node.id in self.typeenv:
                 return self.typeenv[node.id]
@@ -76,6 +78,14 @@ class Typer(NodeTransformer):
                 return unk
         elif type(node) is Constant:
             return node.value
+        elif type(node) is List:
+            return []
+        elif type(node) is Tuple:
+            return tuple()
+        elif type(node) is Dict:
+            return {}
+        else:
+            print(f"Error : Can't determine the type of {dump(node)}")
 
     def visit_Call(self, node):
         if type(node.func) is Subscript:
@@ -115,7 +125,9 @@ class Typer(NodeTransformer):
             nodeargs = [self.visit(arg) for arg in node.args]
             
             for typ, term in zip(reduced_typs, nodeargs):
-                term_ = self.totype(term)
+                term_ = self.to_value(term)
+                if term_ is None:
+                    continue
                 if type(typ) is self.mod.Record and \
                    type(term_) is self.mod.Record:
 
@@ -147,7 +159,7 @@ class Typer(NodeTransformer):
                         print(f"Error in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
                         continue
                 elif type(term_) is not typ:
-                    print(f"Error in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {type(term_)}")
+                    print(f"Error 03 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {type(term_)}")
 
             rettyp = self.calc_ret_type(reduced_typs[-1])
             return Constant(rettyp)
