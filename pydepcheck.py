@@ -8,13 +8,18 @@ unit = object()
 function = type(lambda:None)
 builtins = vars(sys.modules['builtins'])
 
+class Record:
+    def __init__(self, kwargs):
+        self.kwargs = kwargs
+
 class Type:
     def __init__(self, *args):
         self.args = args
 
     @staticmethod
     def is_a_type(other):
-        return other in {int, float, bool, tuple, list, float, dict, function, unit, unk} or type(other) is Type or type(other) is type
+        return other in {int, float, bool, tuple, list, float, dict, function, unit, unk} or \
+            type(other) is Record or type(other) is Type or type(other) is type
 
     def __repr__(self):
         args = ", ".join(str(arg) for arg in self.args)
@@ -73,6 +78,9 @@ class Typer(NodeTransformer):
             return node.value
 
     def visit_Call(self, node):
+        if type(node.func) is Subscript:
+            return node
+
         if node.func.id == "typedebug":
             for arg in node.args:
                 if type(arg) is Constant:
@@ -108,14 +116,38 @@ class Typer(NodeTransformer):
             
             for typ, term in zip(reduced_typs, nodeargs):
                 term_ = self.totype(term)
-                if typ is self.mod.Type:
+                if type(typ) is self.mod.Record and \
+                   type(term_) is self.mod.Record:
+
+                    if len(term_.kwargs.keys()) != len(typ.kwargs.keys()):
+                        print(f"Error : Record length mismatch, expected {typ} found {term_}")
+                        continue
+
+                    for (typk, typv), (termk, termv) in zip(typ.kwargs.items(), term_.kwargs.items()):
+                        if typk != termk:
+                            print(f"Error : Record key mismatch, expected {typ} found {term_}")
+                        if type(typv) is function and type(termv) is function:
+                            typv, termv = typv(), termv()
+                        if typv != termv:
+                            print(f"Error : Record value mismatch, expected {typ} found {term_} ({typv} != {termv})")
+
+                elif type(typ) is function and type(term_) is Lambda:
+                    assert len(term_.args.args) == 0
+                    term_ = self.eval(term_)()
+                    typ = typ()
+                    if typ != term_:
+                        print(f"Error in {node.func.id} @ self.get_source(node) : Expceted function of type {typ} found {term_}")
+                        continue
+                elif typ is self.mod.Type:
                     if not Type.is_a_type(term_):
-                        print(f"Error 01 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                        print(f"Error in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                        continue
                 elif type(typ) is self.mod.Type:
                     if term_ != typ:
-                        print(f"Error 02 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                        print(f"Error in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {term_}")
+                        continue
                 elif type(term_) is not typ:
-                    print(f"Error 03 in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {type(term_)}")
+                    print(f"Error in {node.func.id} @ {self.get_source(node)} : Expected {typ}, found {type(term_)}")
 
             rettyp = self.calc_ret_type(reduced_typs[-1])
             return Constant(rettyp)
